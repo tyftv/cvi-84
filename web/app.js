@@ -193,7 +193,15 @@ function addBlock(type, opts = {}) {
 // find the backdrop colour from the edges of the frame, like clicking it with the eyedropper
 function detectKey(node, announce) {
   const e = chain.engine(node.id); if (!e || !TL.hasClips() || !renderer.targets.has('src')) { if (announce) toast('Import a video first'); return; }
-  const W = chain.W, H = chain.H, d = renderer.grab(renderer.target('src').t, W, H);
+  // sample what actually feeds this block (e.g. the output of a Chroma key above it), not the raw clip
+  let inTex = renderer.target('src').t;
+  for (const n of chain.nodes) {
+    if (n.id === node.id) break;
+    if (n.bypass) continue;
+    const name = (n.mix < 0.999 ? 'm' : 'n') + n.id;
+    if (renderer.targets.has(name)) inTex = renderer.targets.get(name).t;
+  }
+  const W = chain.W, H = chain.H, d = renderer.grab(inTex, W, H);
   const bins = new Array(36).fill(0), sums = new Array(36).fill(0); let lumSum = 0, n = 0, satSum = 0;
   const take = (x, y) => {
     const i = (y * W + x) * 4, r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), dd = mx - mn;
@@ -210,7 +218,7 @@ function detectKey(node, announce) {
   } else {
     const L = lumSum / n;
     setNodeParam(node, 'useStencil', 1); setNodeParam(node, 'stencilSource', 2); setNodeParam(node, 'keyMode', 1);
-    setNodeParam(node, 'keyLuma', Math.max(10, Math.min(245, Math.round(L * 255 + (L > 0.5 ? -50 : 50))))); setNodeParam(node, 'keyInvert', L > 0.5 ? 1 : 0);
+    setNodeParam(node, 'keyLuma', Math.max(10, Math.min(245, Math.round(L * 255 + (L > 0.5 ? -50 : L < 0.08 ? 10 : 50))))); setNodeParam(node, 'keyInvert', L > 0.5 ? 1 : 0);
     if (announce) toast('No coloured backdrop found: keying on brightness');
   }
   e.store.fill(0); e.cascade.fill(0);

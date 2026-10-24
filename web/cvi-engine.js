@@ -441,7 +441,7 @@ export class CVI {
     if (colourizeOn) { if (!(P.colourizeCtl === 1 && !P.colourize && this.fixLutKey)) this.buildLut(); }
     const useLut = colourizeOn || (P.colourizeCtl === 1 && this.fixLutKey);
     const bx = Math.max(1, Math.round(this.zx)), by = Math.max(1, Math.round(this.zy));
-    const cx = W / 2, cy = H / 2, panX = Math.round(this.panX), panY = Math.round(this.panY);
+    const cx = W >> 1, cy = H >> 1, panX = Math.round(this.panX), panY = Math.round(this.panY);
     const dg = this.digital;
     for (let y = 0; y < H; y++) {
       let ly = Math.floor((y - cy) / by) * by + cy - panY; ly = ((ly % H) + H) % H;
