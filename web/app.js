@@ -210,7 +210,7 @@ document.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => {
   buildLib(); buildPresets();
 });
 $('fxSearch').oninput = (e) => { query = e.target.value.trim().toLowerCase(); buildLib(); buildPresets(); };
-const CAT_COLOUR = { Color: '#ff6b9a', Time: '#ffb02e', Shape: '#4fd1c5', Paint: '#a78bfa', 'Video 2': '#60a5fa', Look: '#9ca3af', Advanced: '#e8e8ec' };
+const CAT_COLOUR = { Key: '#34d399', Color: '#ff6b9a', Time: '#ffb02e', Shape: '#4fd1c5', Paint: '#a78bfa', 'Video 2': '#60a5fa', Look: '#9ca3af', Advanced: '#e8e8ec' };
 function buildLib() {
   const host = $('libPane'); host.innerHTML = '';
   for (const cat of CATEGORIES) {
@@ -598,6 +598,7 @@ const pix = (v) => '×' + (1 + Math.pow(v / 255, 1.6) * 15).toFixed(1);
 const doAct = (a) => act(CUR, a);
 const press = (b) => doAct({ k: 'press', b });
 function hsvHex(hh, s, v) { const f = (n) => { const k = (n + hh * 6) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); }; return '#' + [f(5), f(3), f(1)].map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join(''); }
+function hsvRgb(hh, s, v) { const f = (n) => { const k = (n + hh * 6) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); }; return [f(5), f(3), f(1)]; }
 function hexHsv(hex) { const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255); const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let hh = 0; if (d) { hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh = ((hh / 6) + 1) % 1; } return [hh, mx ? d / mx : 0, mx]; }
 
 const MODES = [
@@ -679,6 +680,26 @@ const SECTIONS = {
     const fb = buttons(b, [{ label: 'Freeze', run: () => press('freeze') }], 1);
     binds.push(() => { fb.firstChild.textContent = gp('freezeMode') === 3 ? 'Grab a frame' : (gp('freeze') ? 'Release freeze' : 'Freeze'); fb.firstChild.classList.toggle('on', !!gp('freeze') && gp('freezeMode') !== 3); });
     note(b, 'Live grabs every field. Strobe and Burst grab at the Rate. Single grabs only when you press the button (or F). Music grabs on bass hits.');
+  },
+  // what goes behind a keyed subject
+  keyBg(b) {
+    const node = CUR;
+    const bgOf = () => node.bg || (chain.getParam(node, 'display') === 5 && chain.getParam(node, 'digSrc') ? 'v2' : 'black');
+    const fillColour = () => { act(node, { k: 'storeFill', c: hsvRgb(chain.getParam(node, 'hue') / 255, chain.getParam(node, 'sat') / 255, chain.getParam(node, 'val') / 255) }); };
+    const set = (bg) => {
+      node.bg = bg;
+      if (bg === 'v2') { setNodeParam(node, 'display', 5); setNodeParam(node, 'digSrc', 1); setNodeParam(node, 'colourize', 0); if (!src.v2) toast('Import Video 2 from the top bar'); }
+      else { setNodeParam(node, 'display', 2); setNodeParam(node, 'digSrc', 0); if (bg === 'black') act(node, { k: 'storeFill', c: [0, 0, 0] }); if (bg === 'colour') fillColour(); if (bg === 'canvas') toast('Paint, fill or freeze into this block to build the background'); }
+      uiDirty = true;
+    };
+    const el = h(`<div class="field" style="grid-template-columns:88px minmax(0,1fr)"><span>Background</span><div class="seg"><button type="button" data-v="black">Black</button><button type="button" data-v="colour">Colour</button><button type="button" data-v="v2">Video 2</button><button type="button" data-v="canvas">Canvas</button></div></div>`);
+    el.querySelector('.seg').onclick = (e) => { const x = e.target.closest('button'); if (x) set(x.dataset.v); };
+    const cc = h(`<label class="field"><span>Colour</span><input type="color"></label>`);
+    const ci = cc.querySelector('input');
+    ci.oninput = () => { const [hh, s, v] = hexHsv(ci.value); setNodeParam(node, 'hue', Math.round(hh * 255)); setNodeParam(node, 'sat', Math.round(s * 255)); setNodeParam(node, 'val', Math.round(v * 255)); fillColour(); };
+    binds.push(() => { const bg = bgOf(); el.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === bg)); cc.hidden = bg !== 'colour'; if (document.activeElement !== ci) ci.value = hsvHex(chain.getParam(node, 'hue') / 255, chain.getParam(node, 'sat') / 255, chain.getParam(node, 'val') / 255); });
+    b.appendChild(el); b.appendChild(cc);
+    note(b, 'Tip: put Chroma key first in the chain, then add effects after it (Trail, Colorize, VHS…) to treat the whole composite.');
   },
   shatterRate(b) { toggle(b, { p: 'shatter', label: 'Flicker' }); slider(b, { p: 'rate2', label: 'Rate', fmt: pct, reset: 200 }); },
   key(b) {
@@ -806,7 +827,7 @@ const SECTIONS = {
     }
   },
 };
-const SECTION_TITLES = { mode: 'Routing', color: 'Color', colourSource: 'Colour', colourSpeed: 'Crawl', pixelate: 'Pixels', transform: 'Transform', mirror: 'Mirror', scroll: 'Scroll', freeze: 'Freeze & strobe', shatterRate: 'Flicker', key: 'Key', mask: 'Mask', pattern: 'Pattern', scan: 'Scan', tunnel: 'Tunnel', inputs: 'Video 2', paint: 'Paint & brush', fill: 'Fill canvas', text: 'Text' };
+const SECTION_TITLES = { keyBg: 'Background', mode: 'Routing', color: 'Color', colourSource: 'Colour', colourSpeed: 'Crawl', pixelate: 'Pixels', transform: 'Transform', mirror: 'Mirror', scroll: 'Scroll', freeze: 'Freeze & strobe', shatterRate: 'Flicker', key: 'Key', mask: 'Mask', pattern: 'Pattern', scan: 'Scan', tunnel: 'Tunnel', inputs: 'Video 2', paint: 'Paint & brush', fill: 'Fill canvas', text: 'Text' };
 const ALL = ['mode', 'color', 'freeze', 'transform', 'mask', 'paint', 'fill', 'text', 'inputs'];
 const showAll = new Set();
 function buildInspector() {

@@ -27,7 +27,8 @@ export const MODULES = {
   slowscan: { name: 'Slow scan', cat: 'Time', kind: 'cvi', desc: 'Freezes the picture one column (or row) at a time, so motion smears across the frame. Press Run scan.', p: { display: 3, useStencil: 1, stencilErase: 1, stencilWipe: 2 }, enter: [{ k: 'stencilFill', v: 1 }, { k: 'press', b: 'wipeStencil' }], sections: ['scan'] },
   paint: { name: 'Paint layer', cat: 'Paint', kind: 'cvi', desc: 'Draw, fill and write text over the video with the CVI paintbox. Pick a tool above the viewer.', p: { display: 2, ...allOn, drawColour: 1, drawStencil: 1, brush: 4, sat: 255 }, enter: clearStencil, sections: ['paint', 'fill', 'text'] },
   tunnel: { name: 'Colour tunnel', cat: 'Paint', kind: 'cvi', desc: 'Rings of colour radiating from the centre behind the keyed subject.', p: { display: 2, ...key, colourWipe: 6, colourCtl: 2, zoom: 40 }, enter: [{ k: 'press', b: 'wipeColour' }], sections: ['key', 'tunnel'] },
-  keyer: { name: 'Keyer', cat: 'Video 2', kind: 'cvi', desc: 'Keys this video over Video 2 (import it from the top bar).', p: { display: 5, ...key, digSrc: 1 }, sections: ['key', 'inputs'] },
+  keyer: { name: 'Chroma key', cat: 'Key', kind: 'cvi', desc: 'Keys out a backdrop (blue by default, or click Pick from video on yours) and puts something else behind the subject: black, a colour, Video 2, or the canvas.', p: { display: 2, ...key }, enter: [{ k: 'storeFill', c: [0, 0, 0] }], sections: ['keyBg', 'key'] },
+  lumakey: { name: 'Luma key', cat: 'Key', kind: 'cvi', desc: 'Keys on brightness instead of colour: keeps everything brighter (or darker) than the threshold.', p: { display: 2, ...key, keyMode: 1, keyLuma: 128 }, enter: [{ k: 'storeFill', c: [0, 0, 0] }], sections: ['keyBg', 'key'] },
   wipe: { name: 'Wipe to Video 2', cat: 'Video 2', kind: 'cvi', desc: 'Transition from this video to Video 2: sweep across, down or disintegrate.', p: { display: 15, useStencil: 1, digSrc: 1, stencilErase: 1, stencilWipe: 2 }, enter: [{ k: 'stencilFill', v: 1 }, { k: 'press', b: 'wipeStencil' }], sections: ['scan', 'inputs'] },
   double: { name: 'Double exposure', cat: 'Video 2', kind: 'cvi', desc: 'Blends this video with Video 2 through the frame buffer.', p: { display: 12, ...allOn, digSrc: 1 }, enter: clearStencil, sections: ['freeze', 'inputs'] },
   flip: { name: 'Video 1/2 flip', cat: 'Video 2', kind: 'cvi', desc: 'Flickers between this video and Video 2 at the Rate.', p: { display: 15, ...allOn, digSrc: 1, shatter: 1, rate2: 160 }, enter: clearStencil, sections: ['shatterRate', 'inputs'] },
@@ -37,7 +38,7 @@ export const MODULES = {
   vhs: { name: 'VHS', cat: 'Look', kind: 'look', look: 'vhs', desc: 'Tape: chroma bleed, tracking wobble, snow, dropouts, head-switch noise.' },
   crt: { name: 'CRT', cat: 'Look', kind: 'look', look: 'crt', desc: 'Tube: curvature, scanlines, phosphor mask, glow and persistence.' },
 };
-export const CATEGORIES = ['Color', 'Time', 'Shape', 'Paint', 'Video 2', 'Look', 'Advanced'];
+export const CATEGORIES = ['Key', 'Color', 'Time', 'Shape', 'Paint', 'Video 2', 'Look', 'Advanced'];
 
 let nextId = 1;
 export const needsV2 = (P) => P.digSrc || P.anaSrc || P.keySrc || P.stencilSource === 1;
@@ -89,7 +90,7 @@ export class Chain {
     const c = new Chain(W, H);
     for (const n of j.nodes) {
       const m = MODULES[n.type]; if (!m) continue;
-      const node = { id: n.id, type: n.type, name: n.name, bypass: n.bypass || 0, mix: n.mix ?? 1 };
+      const node = { id: n.id, type: n.type, name: n.name, bypass: n.bypass || 0, mix: n.mix ?? 1, bg: n.bg };
       if (+n.id.slice(1) >= nextId) nextId = +n.id.slice(1) + 1;
       if (m.kind === 'look') node.params = { ...JSON.parse(JSON.stringify(LOOK_DEFAULTS[m.look])), ...n.params };
       else {
