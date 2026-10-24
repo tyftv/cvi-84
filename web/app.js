@@ -140,7 +140,7 @@ function setNodeParam(node, k, v) {
   const prev = chain.getParam(node, k);
   chain.setParam(node, k, v);
   if (recording()) auto.recordValue(`${node.id}|${k}`, curField(), v, prev);
-  uiDirty = true; if (k === 'bypass' || k === 'mix') stripDirty = true;
+  uiDirty = true;
 }
 const release = (node, k) => node && auto.release(`${node.id}|${k}`);
 // an engine action on one block (press, pad stroke, preset, fill...) — recorded as an event
@@ -164,7 +164,7 @@ function addBlock(type, opts = {}) {
   const i = selected ? chain.nodes.findIndex((n) => n.id === selected) + 1 : chain.nodes.length;
   chain.insert(node, i <= 0 ? chain.nodes.length : i);
   const e = chain.engine(node.id); if (e) e.field = curField();
-  selected = node.id;
+  selected = node.id; openCards.add(node.id);
   stripDirty = inspDirty = uiDirty = true;
   toast('Added ' + node.name);
   return node;
@@ -177,8 +177,7 @@ function removeBlock(id) {
   if (selected === id) selected = chain.nodes[Math.min(i, chain.nodes.length - 1)]?.id || null;
   stripDirty = inspDirty = uiDirty = true;
 }
-function select(id) { selected = id; stripDirty = inspDirty = uiDirty = true; }
-$('btnClearChain').onclick = () => { for (const n of [...chain.nodes]) removeBlock(n.id); toast('Chain cleared'); };
+function select(id) { selected = id; if (id) openCards.add(id); stripDirty = inspDirty = uiDirty = true; }
 
 // ================================================================ library (effects) + presets
 const thumbs = new Map();
@@ -368,64 +367,109 @@ function tick(now) {
     if (src.v1) chain.setField(Math.floor(curTime() * fieldRate));
     freeSteps = 0;
   }
-  if (stripDirty) { stripDirty = false; buildStrip(); }
-  if (inspDirty) { inspDirty = false; buildInspector(); buildPresetsHint(); }
+  if ((stripDirty || inspDirty) && !$('insp').contains(document.activeElement)) { const st = $('insp').scrollTop; stripDirty = inspDirty = false; buildChainPanel(); $('insp').scrollTop = st; buildPresetsHint(); }
+  else if ((stripDirty || inspDirty) && document.activeElement && !document.activeElement.matches('input, textarea, select')) { const st = $('insp').scrollTop; stripDirty = inspDirty = false; buildChainPanel(); $('insp').scrollTop = st; buildPresetsHint(); }
   if (uiDirty) { uiDirty = false; syncUI(); }
-  drawOverlay(); if (bottomTab === 'auto') drawTimeline(); updateTC();
+  drawOverlay(); drawTimeline(); updateTC();
   requestAnimationFrame(tick);
 }
 function buildPresetsHint() { if (libTab === 'pre') buildPresets(); }
 
-// ================================================================ effect chain strip
-const SVG = { power: '<path d="M12 3v8M6.3 6.3a8 8 0 1011.4 0"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>' };
-let dragId = null;
-function buildStrip() {
-  const host = $('strip'); host.innerHTML = '';
-  const arrow = () => `<span class="arrow"><svg viewBox="0 0 24 24">${SVG.arrow}</svg></span>`;
-  host.insertAdjacentHTML('beforeend', `<button type="button" class="pill" id="pillIn" title="${src.v1 ? esc(src.v1.name) : 'Import a video'}">${src.v1 ? 'Video 1' : 'Import video'}</button>`);
-  for (const n of chain.nodes) {
-    const m = MODULES[n.type];
-    host.insertAdjacentHTML('beforeend', arrow());
-    const b = document.createElement('div');
-    b.className = `block${n.id === selected ? ' on' : ''}${n.bypass ? ' off' : ''}`; b.draggable = true; b.dataset.id = n.id; b.tabIndex = 0;
-    b.innerHTML = `<div class="bn" title="${esc(n.name)}">${esc(n.name)}</div><div class="bc"><i style="background:${CAT_COLOUR[m.cat]}"></i>${m.kind === 'cvi' ? 'CVI unit' : 'Look'}${n.bypass ? ' · off' : n.mix < 0.999 ? ` · ${Math.round(n.mix * 100)}%` : ''}</div><div class="bm"><i style="width:${Math.round(n.mix * 100)}%"></i></div>
-      <div class="bt"><button type="button" data-act="bypass" title="${n.bypass ? 'Turn on' : 'Bypass'}"><svg viewBox="0 0 24 24">${SVG.power}</svg></button><button type="button" data-act="del" title="Remove"><svg viewBox="0 0 24 24">${SVG.x}</svg></button></div>`;
-    b.addEventListener('click', (e) => {
-      const a = e.target.closest('[data-act]');
-      if (a && a.dataset.act === 'bypass') { setNodeParam(n, 'bypass', n.bypass ? 0 : 1); release(n, 'bypass'); stripDirty = true; return; }
-      if (a && a.dataset.act === 'del') { removeBlock(n.id); return; }
-      select(n.id);
-    });
-    b.addEventListener('keydown', (e) => { if (e.key === 'Delete' || e.key === 'Backspace') { removeBlock(n.id); e.preventDefault(); } });
-    b.addEventListener('dragstart', (e) => { dragId = n.id; b.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', n.id); });
-    b.addEventListener('dragend', () => { dragId = null; stripDirty = true; });
-    b.addEventListener('dragover', (e) => { if (!dragId || dragId === n.id) return; e.preventDefault(); const r = b.getBoundingClientRect(); const left = e.clientX < r.left + r.width / 2; b.classList.toggle('drop-l', left); b.classList.toggle('drop-r', !left); });
-    b.addEventListener('dragleave', () => b.classList.remove('drop-l', 'drop-r'));
-    b.addEventListener('drop', (e) => {
-      e.preventDefault(); if (!dragId) return;
-      const r = b.getBoundingClientRect(); const left = e.clientX < r.left + r.width / 2;
-      const from = chain.nodes.findIndex((x) => x.id === dragId); let to = chain.nodes.findIndex((x) => x.id === n.id) + (left ? 0 : 1);
-      if (from < to) to--;
-      chain.move(dragId, to); stripDirty = true;
-    });
-    host.appendChild(b);
-  }
-  host.insertAdjacentHTML('beforeend', arrow());
-  host.insertAdjacentHTML('beforeend', `<button type="button" class="pill${selected === null ? ' on' : ''}" id="pillOut" title="Project settings">Output</button>`);
-  host.insertAdjacentHTML('beforeend', `<span class="arrow"></span><button type="button" class="addblock" id="btnAddBlock">+ Add effect</button>`);
-  $('pillOut').onclick = () => select(null);
-  $('pillIn').onclick = () => $('fileV1').click();
-  $('btnAddBlock').onclick = () => { document.querySelector('[data-tab="lib"]').click(); $('fxSearch').focus(); toast('Pick an effect from the library on the left'); };
+// ================================================================ chain stack (left panel)
+const SVG = { power: '<path d="M12 3v8M6.3 6.3a8 8 0 1011.4 0"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', down: '<path d="M12 5v14M6 13l6 6 6-6"/>' };
+const openCards = new Set(); // which blocks are dropped down
+let dragId = null, HOST = null;
+function flowArrow() { return h(`<div class="ch-flow"><svg viewBox="0 0 24 24">${SVG.down}</svg></div>`); }
+function buildChainPanel() {
+  binds.length = 0;
+  const host = $('insp'); host.innerHTML = '';
+  const head = h(`<div class="ch-head"><h2>Effect chain</h2><button type="button" class="btn ghost" id="btnClearChain">Clear</button></div>`);
+  head.querySelector('button').onclick = () => { for (const n of [...chain.nodes]) removeBlock(n.id); toast('Chain cleared'); };
+  host.appendChild(head);
+  const srcRow = h(`<button type="button" class="ch-src" title="Import a video">Video 1&nbsp;<b>${src.v1 ? esc(src.v1.name) : 'none, click to import'}</b></button>`);
+  srcRow.onclick = () => $('fileV1').click();
+  host.appendChild(srcRow);
+  if (!chain.nodes.length) host.appendChild(h(`<div class="ch-empty"><b>No effects yet</b>Click an effect in the library on the right to add it here. Effects run from top to bottom, like layers in Premiere.</div>`));
+  chain.nodes.forEach((node, idx) => { host.appendChild(flowArrow()); host.appendChild(buildCard(node, idx)); });
+  host.appendChild(flowArrow());
+  host.appendChild(buildOutputCard());
 }
-let bottomTab = 'chain';
-document.querySelectorAll('[data-btab]').forEach((b) => b.onclick = () => {
-  bottomTab = b.dataset.btab;
-  document.querySelectorAll('[data-btab]').forEach((x) => x.classList.toggle('on', x === b));
-  $('chainPane').hidden = bottomTab !== 'chain'; $('autoPane').hidden = bottomTab !== 'auto';
-  $('btnClearChain').hidden = bottomTab !== 'chain'; $('btnClearAuto').hidden = bottomTab !== 'auto';
-  uiDirty = true;
-});
-
+function buildCard(node, idx) {
+  const m = MODULES[node.type];
+  const card = h(`<div class="ccard${openCards.has(node.id) ? '' : ' closed'}${node.id === selected ? ' sel' : ''}"></div>`);
+  card.dataset.id = node.id;
+  const head = h(`<div class="chead" title="Click to open or close"><span class="grip" draggable="true" title="Drag to reorder"><svg viewBox="0 0 12 16"><circle cx="3" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="9" cy="13" r="1.5"/></svg></span>
+    <svg class="chev2" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg><span class="num">${idx + 1}</span><span class="dot" style="background:${CAT_COLOUR[m.cat]}"></span><span class="cname">${esc(node.name)}</span>
+    <button type="button" class="ib pw" title="On / off"><svg viewBox="0 0 24 24">${SVG.power}</svg></button><button type="button" class="ib del" title="Remove"><svg viewBox="0 0 24 24">${SVG.x}</svg></button></div>`);
+  card.appendChild(head);
+  head.addEventListener('click', (e) => {
+    if (e.target.closest('.pw')) { setNodeParam(node, 'bypass', node.bypass ? 0 : 1); release(node, 'bypass'); return; }
+    if (e.target.closest('.del')) { removeBlock(node.id); return; }
+    if (e.target.closest('.grip')) return;
+    const wasSel = selected === node.id;
+    selected = node.id;
+    if (wasSel || !openCards.has(node.id)) { if (openCards.has(node.id)) openCards.delete(node.id); else openCards.add(node.id); }
+    document.querySelectorAll('.ccard').forEach((c) => c.classList.toggle('sel', c.dataset.id === selected));
+    card.classList.toggle('closed', !openCards.has(node.id));
+    $('pillOutCard') && $('pillOutCard').classList.remove('sel');
+    if (libTab === 'pre') buildPresets();
+    uiDirty = true;
+  });
+  head.querySelector('.cname').addEventListener('dblclick', (e) => { e.stopPropagation(); const inp = h(`<input class="name" style="font:inherit;font-weight:600;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 4px;width:100%" maxlength="40">`); inp.value = node.name; e.target.replaceWith(inp); inp.focus(); inp.select(); const done = () => { node.name = inp.value.trim() || m.name; stripDirty = true; }; inp.onblur = done; inp.onkeydown = (k) => { if (k.key === 'Enter') inp.blur(); k.stopPropagation(); }; });
+  // drag to reorder (grip)
+  const grip = head.querySelector('.grip');
+  grip.addEventListener('dragstart', (e) => { dragId = node.id; card.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', node.id); e.dataTransfer.setDragImage(card, 20, 16); });
+  grip.addEventListener('dragend', () => { dragId = null; stripDirty = true; });
+  card.addEventListener('dragover', (e) => { if (!dragId || dragId === node.id) return; e.preventDefault(); const r = card.getBoundingClientRect(); const top = e.clientY < r.top + Math.min(r.height / 2, 24); card.classList.toggle('drop-t', top); card.classList.toggle('drop-b', !top); });
+  card.addEventListener('dragleave', () => card.classList.remove('drop-t', 'drop-b'));
+  card.addEventListener('drop', (e) => {
+    e.preventDefault(); if (!dragId) return;
+    const r = card.getBoundingClientRect(); const top = e.clientY < r.top + Math.min(r.height / 2, 24);
+    const from = chain.nodes.findIndex((x) => x.id === dragId); let to = chain.nodes.findIndex((x) => x.id === node.id) + (top ? 0 : 1);
+    if (from < to) to--;
+    chain.move(dragId, to); stripDirty = true;
+  });
+  binds.push(() => { card.classList.toggle('off', !!node.bypass); head.querySelector('.pw').classList.toggle('on', !node.bypass); });
+  // body: description, on/amount, the effect's own controls, and everything else under Advanced
+  const body = h('<div class="cbody"></div>');
+  card.appendChild(body);
+  // controls inside this card act on this block
+  for (const ev of ['click', 'input', 'change', 'pointerdown', 'dblclick', 'keydown']) body.addEventListener(ev, () => { CUR = node; }, true);
+  if (openCards.has(node.id)) fillCard(body, node);
+  else head.addEventListener('click', function once() { if (!body.childElementCount && openCards.has(node.id)) fillCard(body, node); }, { capture: false });
+  return card;
+}
+function fillCard(body, node) {
+  const m = MODULES[node.type];
+  const first = binds.length;
+  CUR = node; HOST = body;
+  body.appendChild(h(`<p class="cdesc">${esc(m.desc)}</p>`));
+  const top = h('<div class="ctop"></div>'); body.appendChild(top);
+  slider(top, { p: 'mix', label: 'Amount', min: 0, max: 1, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', reset: 1 });
+  if (m.kind === 'look') SECTIONS.look(top, m.look);
+  else {
+    const simple = m.sections[0] === 'all' ? ALL : m.sections;
+    for (const s of simple) SECTIONS[s](section(SECTION_TITLES[s], true));
+    if (m.sections[0] !== 'all') {
+      const advOpen = showAll.has(node.id);
+      const adv = h(`<button type="button" class="advbtn">${advOpen ? 'Hide advanced settings' : 'Advanced: every CVI setting for this effect'}</button>`);
+      adv.onclick = () => { if (showAll.has(node.id)) showAll.delete(node.id); else showAll.add(node.id); stripDirty = true; };
+      if (advOpen) for (const s of ALL.filter((x) => !simple.includes(x))) SECTIONS[s](section(SECTION_TITLES[s], false));
+      body.appendChild(adv);
+    }
+  }
+  // binds made for this card read their own block
+  for (let i = first; i < binds.length; i++) { const f = binds[i]; binds[i] = () => { CUR = node; f(); }; }
+  HOST = null;
+}
+function buildOutputCard() {
+  const card = h(`<div class="ccard${openCards.has('out') ? '' : ' closed'}" id="pillOutCard"><div class="chead"><span class="grip"></span><svg class="chev2" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg><span class="num"></span><span class="dot" style="background:var(--faint)"></span><span class="cname">Output</span><span class="desc" style="margin-right:6px">project settings</span></div><div class="cbody"></div></div>`);
+  card.querySelector('.chead').onclick = () => { if (openCards.has('out')) openCards.delete('out'); else openCards.add('out'); card.classList.toggle('closed', !openCards.has('out')); };
+  const first = binds.length; HOST = card.querySelector('.cbody');
+  buildProjectPanel();
+  HOST = null;
+  return card;
+}
 // ================================================================ tools + pad
 const ICON = {
   pointer: '<path d="M5 3l14 8-6 2-2 6z"/>',
@@ -448,7 +492,7 @@ const TOOLS = [
 let tool = 'pointer', prevTool = 'pointer';
 function buildTools() {
   $('tools').innerHTML = TOOLS.map((t) => (t === 'sep' ? '<span class="sep"></span>' : `<button type="button" class="tool" data-tool="${t[0]}" title="${t[1]}" aria-label="${t[1]}"><svg viewBox="0 0 24 24">${ICON[t[0]]}</svg></button>`)).join('')
-    + '<span class="sep"></span><span class="desc" style="margin:0 6px 0 0">Paint on</span><div class="target" id="paintTarget"><button type="button" data-t="c">Picture</button><button type="button" data-t="m">Mask</button><button type="button" data-t="b">Both</button></div>'
+    + '<span class="sep"></span><span class="desc" style="margin:0 6px 0 0;white-space:nowrap">Paint on</span><div class="target" id="paintTarget"><button type="button" data-t="c">Picture</button><button type="button" data-t="m">Mask</button><button type="button" data-t="b">Both</button></div>'
     + '<button type="button" class="tool" id="btnUndo" title="Undo paint (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/></svg></button><span class="toolhint" id="toolHint"></span>';
   $('tools').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tool]'); if (b) { selectTool(b.dataset.tool); return; }
@@ -538,7 +582,7 @@ const sp = (k, v) => setNodeParam(CUR, k, v);
 function section(title, open = true, desc) {
   const s = h(`<section class="sec${open ? '' : ' closed'}"><header><h3>${title}</h3><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></header><div class="body">${desc ? `<p class="desc" style="margin:0">${desc}</p>` : ''}</div></section>`);
   s.querySelector('header').onclick = () => s.classList.toggle('closed');
-  $('insp').appendChild(s);
+  (HOST || $('insp')).appendChild(s);
   return s.querySelector('.body');
 }
 function slider(host, { p, label, min = 0, max = 255, step = 1, fmt, cls = '', reset, show }) {
@@ -701,9 +745,9 @@ const SECTIONS = {
   },
   shatterRate(b) { toggle(b, { p: 'shatter', label: 'Flicker' }); slider(b, { p: 'rate2', label: 'Rate', fmt: pct, reset: 200 }); },
   key(b) {
-    seg(b, { p: 'stencilSource', label: 'Key from', opts: [[2, 'Colour / brightness'], [1, 'Video 2'], [0, 'Painted mask']] });
+    seg(b, { p: 'stencilSource', label: 'Key from', opts: [[2, 'Picture'], [1, 'Video 2'], [0, 'Painted']] });
     seg(b, { p: 'keyMode', label: 'Key on', opts: [[0, 'Colour'], [1, 'Brightness']], show: keyed });
-    const kc = h(`<label class="field" style="grid-template-columns:88px minmax(0,1fr) auto"><span>Backdrop</span><input type="color"><button type="button" class="gbtn">Pick from video</button></label>`);
+    const kc = h(`<label class="field" style="grid-template-columns:88px minmax(0,1fr) auto"><span>Backdrop</span><input type="color"><button type="button" class="gbtn">Pick</button></label>`);
     const kci = kc.querySelector('input');
     kci.oninput = () => sp('keyHue', Math.round(hexHsv(kci.value)[0] * 360));
     kc.querySelector('button').onclick = (e) => { e.preventDefault(); pickKeyArmed = true; uiDirty = true; toast('Click the background in the picture'); };
@@ -713,6 +757,8 @@ const SECTIONS = {
     slider(b, { p: 'keySat', label: 'Min saturation', fmt: pct, reset: 60, show: () => keyed() && gp('keyMode') === 0 });
     slider(b, { p: 'keyLuma', label: 'Threshold', fmt: pct, reset: 128, show: () => (keyed() && gp('keyMode') === 1) || gp('stencilSource') === 1 });
     toggle(b, { p: 'keyInvert', label: 'Swap subject / background', show: () => gp('stencilSource') !== 0 });
+    slider(b, { p: 'keyEdge', label: 'Edge', fmt: (v) => (v === 0 ? 'Blocky' : Math.round(v / 2.55) + '%'), reset: 140, show: () => gp('stencilSource') !== 0 });
+    note(b, 'Edge: all the way left is the blocky original CVI key; slide right for a smooth, full-resolution edge with more softness.', () => gp('stencilSource') !== 0);
     note(b, 'The key decides which part is the subject. The original CVI keyed on a blue backdrop; on other footage use Pick from video and click your background (a plain wall works best).', keyed);
   },
   mask(b) {
@@ -728,6 +774,7 @@ const SECTIONS = {
     slider(b, { p: 'keySat', label: 'Min saturation', fmt: pct, reset: 60, show: () => keyed() && gp('keyMode') === 0 });
     slider(b, { p: 'keyLuma', label: 'Threshold', fmt: pct, reset: 128, show: () => (keyed() && gp('keyMode') === 1) || gp('stencilSource') === 1 });
     toggle(b, { p: 'keyInvert', label: 'Invert key', show: () => gp('stencilSource') !== 0 });
+    slider(b, { p: 'keyEdge', label: 'Edge', fmt: (v) => (v === 0 ? 'Blocky' : Math.round(v / 2.55) + '%'), reset: 0, show: () => gp('stencilSource') === 1 || gp('stencilSource') === 2 });
     buttons(b, [{ label: 'Pick key from video', run: () => { pickKeyArmed = true; toast('Click the background in the picture'); } }], 1);
     SECTIONS.maskTools(b);
   },
@@ -828,37 +875,8 @@ const SECTIONS = {
 const SECTION_TITLES = { keyBg: 'Background', mode: 'Routing', color: 'Color', colourSource: 'Colour', colourSpeed: 'Crawl', pixelate: 'Pixels', transform: 'Transform', mirror: 'Mirror', scroll: 'Scroll', freeze: 'Freeze & strobe', shatterRate: 'Flicker', key: 'Key', mask: 'Mask', pattern: 'Pattern', scan: 'Scan', tunnel: 'Tunnel', inputs: 'Video 2', paint: 'Paint & brush', fill: 'Fill canvas', text: 'Text' };
 const ALL = ['mode', 'color', 'freeze', 'transform', 'mask', 'paint', 'fill', 'text', 'inputs'];
 const showAll = new Set();
-function buildInspector() {
-  binds.length = 0;
-  const host = $('insp'); host.innerHTML = '';
-  const node = selNode(); CUR = node;
-  if (!node) { buildProjectPanel(); return; }
-  const m = MODULES[node.type];
-  const head = h(`<div class="insp-head"><input class="name" aria-label="Effect name" maxlength="40"><p class="desc"></p></div>`);
-  const nm = head.querySelector('.name'); nm.value = node.name;
-  nm.onchange = () => { node.name = nm.value.trim() || m.name; stripDirty = true; };
-  head.querySelector('.desc').textContent = m.desc;
-  host.appendChild(head);
-  const cb = h('<div style="display:grid;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)"></div>');
-  host.appendChild(cb);
-  const onT = h(`<div class="row"><label>On</label><button type="button" class="switch" role="switch" aria-label="On"></button></div>`);
-  onT.querySelector('.switch').onclick = () => { setNodeParam(node, 'bypass', node.bypass ? 0 : 1); release(node, 'bypass'); };
-  binds.push(() => onT.querySelector('.switch').setAttribute('aria-checked', node.bypass ? 'false' : 'true'));
-  cb.appendChild(onT);
-  slider(cb, { p: 'mix', label: 'Amount', min: 0, max: 1, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', reset: 1 });
-  if (m.kind === 'look') { SECTIONS.look(section(m.name), m.look); return; }
-  const list = m.sections[0] === 'all' || showAll.has(node.id) ? ALL : m.sections;
-  for (const s of list) SECTIONS[s](section(SECTION_TITLES[s]));
-  if (m.sections[0] !== 'all') {
-    const adv = h(`<div style="padding:12px"><button type="button" class="btn" style="width:100%;justify-content:center">${showAll.has(node.id) ? 'Show simple controls' : 'Show all CVI settings'}</button></div>`);
-    adv.querySelector('button').onclick = () => { if (showAll.has(node.id)) showAll.delete(node.id); else showAll.add(node.id); inspDirty = true; };
-    host.appendChild(adv);
-  }
-}
 function buildProjectPanel() {
-  const host = $('insp');
-  if (!chain.nodes.length) host.appendChild(h(`<div class="empty"><h3>Build an effect chain</h3>Pick effects from the library on the left. They stack in order in the chain under the viewer: drag to reorder, click one to edit it here. Presets drop a complete CVI setup into the chain.</div>`));
-  const b = section('Project', true, 'Output settings for the whole chain.');
+  const b = h('<div class="ctop"></div>'); HOST.appendChild(b);
   const dt = h(`<div class="field" style="grid-template-columns:88px minmax(0,1fr)"><span>Pixel detail</span><div class="seg"><button type="button" data-v="0">Original</button><button type="button" data-v="1">Fine</button><button type="button" data-v="2">Extra fine</button></div></div>`);
   dt.querySelector('.seg').onclick = (e) => { const x = e.target.closest('button'); if (!x) return; settings.detail = +x.dataset.v; rebuildGrid(); toast(`Pixel grid ${chain.W} × ${chain.H}`); uiDirty = true; };
   const tg = (label, key, hint) => { const el = h(`<div class="row"><label>${label}${hint ? ` <span class="desc">${hint}</span>` : ''}</label><button type="button" class="switch" role="switch" aria-label="${label}"></button></div>`); el.querySelector('.switch').onclick = () => { settings[key] = settings[key] ? 0 : 1; uiDirty = true; }; binds.push(() => el.querySelector('.switch').setAttribute('aria-checked', settings[key] ? 'true' : 'false')); return el; };
@@ -898,7 +916,7 @@ function syncUI() {
   $('playIcon').innerHTML = playing ? '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>' : '<path d="M4 2l10 6-10 6z"/>';
   const lanes = auto.lanes.size + (auto.events.length ? 1 : 0);
   $('autoCount').textContent = lanes ? `(${lanes})` : '';
-  $('tlNote').textContent = recording() ? 'Recording: every change is written to the timeline.' : recArm ? 'Armed. Press play to record.' : bottomTab === 'chain' ? 'Effects run left to right. Drag to reorder, click to edit, power icon to bypass.' : 'Press Record, then play. Your changes are replayed on export.';
+  $('tlNote').textContent = recording() ? 'Recording: every change is written to the timeline.' : recArm ? 'Armed. Press play to record.' : 'Press Record, then play: every change you make is replayed on export.';
 }
 let toastTimer;
 function toast(m) { const t = $('toast'); t.textContent = m; t.style.opacity = 1; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.opacity = 0; }, 2200); }

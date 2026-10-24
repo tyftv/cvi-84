@@ -64,7 +64,7 @@ export function defaultParams() {
     // console buttons
     colourize: 0, drawColour: 1, drawStencil: 0, useTexture: 0, useStencil: 0, invertStencil: 0, freeze: 0, drawLock: 0,
     // VIDEO menus
-    display: 5, stencilSource: 0, keyMode: 0, keyHue: 225, keyTol: 70, keySat: 60, keyLuma: 128, keyInvert: 0,
+    display: 5, stencilSource: 0, keyMode: 0, keyHue: 225, keyTol: 70, keySat: 60, keyLuma: 128, keyInvert: 0, keyEdge: 0,
     digSrc: 0, anaSrc: 0, keySrc: 0, blanking: 0,
     vmirror: 0, hmirror: 0, hwipe: 0, vwipe: 0, shatter: 0, panpen: 0, glide: 0, slide: 0,
     freezeMode: 0, colourizeCtl: 0, colourizeType: 7,
@@ -459,6 +459,7 @@ export class CVI {
     const needKey = P.stencilSource !== 0;
     let invert = P.invertStencil;
     if (P.shatter) { const p2 = this.period(P.rate2); if (this.field % p2 === 0) this.shatterPhase ^= 1; invert ^= this.shatterPhase; }
+    this.effInvert = invert;
     const kh = P.keyHue / 360, kt = P.keyTol / 255 * 0.5, ksat = P.keySat / 255, kl = P.keyLuma / 255;
     for (let y = 0; y < H; y++) {
       const row = my[y] * W;
@@ -530,30 +531,38 @@ export class CVI {
     }
     // readout
     const crawlPhase = this.field / (this.period(P.rate1) * 3);
-    const tmp = [0, 0, 0];
+    // colour of one plane at one pixel (4-bit), or -1 for the full-res analog plane
+    const planeRGB = (plane, i, x, row, out, o) => {
+      let r, g, b;
+      if (plane === D) { r = dg[i * 3]; g = dg[i * 3 + 1]; b = dg[i * 3 + 2]; }
+      else if (plane === C) { r = cas[i * 3]; g = cas[i * 3 + 1]; b = cas[i * 3 + 2]; }
+      else if (plane === A) { r = ana[i * 4] >> 4; g = ana[i * 4 + 1] >> 4; b = ana[i * 4 + 2] >> 4; }
+      else {
+        const si = (row + mx[x]) * 3;
+        r = store[si]; g = store[si + 1]; b = store[si + 2];
+        if (crawl && (r | g | b)) {
+          const hs = rgb2hsv(r / 15, g / 15, b / 15);
+          const xy = x + ((i / W) | 0);
+          const ph = crawl === 2 ? 0.5 + 0.5 * Math.sin(crawlPhase * 6.283 + xy * 0.15) : 1;
+          const cr = hsv2rgb(hs[0] - crawlPhase + xy * 0.012, Math.max(hs[1], 0.6), hs[2] * (crawl === 2 ? 0.4 + 0.6 * ph : 1));
+          r = Math.round(cr[0] * 15); g = Math.round(cr[1] * 15); b = Math.round(cr[2] * 15);
+        }
+        if (P.stencilShow && st[row + mx[x]]) { r = Math.min(15, r + 4); g = Math.min(15, g + 4); b = Math.min(15, b + 4); }
+      }
+      out[o] = r * 17; out[o + 1] = g * 17; out[o + 2] = b * 17; out[o + 3] = plane;
+    };
+    // with a smooth key edge, the compositor needs both the inside and the outside picture everywhere
+    const dual = P.keyEdge > 0 && P.useStencil && (P.stencilSource === 1 || P.stencilSource === 2);
+    if (dual && (!this.viewOn || this.viewOn.length !== view.length)) { this.viewOn = new Uint8Array(view.length); this.viewOff = new Uint8Array(view.length); }
+    this.dual = dual;
     for (let y = 0; y < H; y++) {
       const row = my[y] * W;
       for (let x = 0; x < W; x++) {
         const i = y * W + x, o = i * 4;
-        let plane = mk[i] ? onD : offD;
-        if (wipeEdgeX >= 0 && x >= wipeEdgeX) plane = D;
-        if (wipeEdgeY >= 0 && y >= wipeEdgeY) plane = D;
-        let r, g, b;
-        if (plane === D) { r = dg[i * 3]; g = dg[i * 3 + 1]; b = dg[i * 3 + 2]; }
-        else if (plane === C) { r = cas[i * 3]; g = cas[i * 3 + 1]; b = cas[i * 3 + 2]; }
-        else if (plane === A) { r = ana[i * 4] >> 4; g = ana[i * 4 + 1] >> 4; b = ana[i * 4 + 2] >> 4; }
-        else {
-          const si = (row + mx[x]) * 3;
-          r = store[si]; g = store[si + 1]; b = store[si + 2];
-          if (crawl && (r | g | b)) {
-            const hs = rgb2hsv(r / 15, g / 15, b / 15);
-            const ph = crawl === 2 ? 0.5 + 0.5 * Math.sin(crawlPhase * 6.283 + (x + y) * 0.15) : 1;
-            const cr = hsv2rgb(hs[0] - crawlPhase + (x + y) * 0.012, Math.max(hs[1], 0.6), hs[2] * (crawl === 2 ? 0.4 + 0.6 * ph : 1));
-            r = Math.round(cr[0] * 15); g = Math.round(cr[1] * 15); b = Math.round(cr[2] * 15);
-          }
-          if (P.stencilShow && st[row + mx[x]]) { r = Math.min(15, r + 4); g = Math.min(15, g + 4); b = Math.min(15, b + 4); }
-        }
-        view[o] = r * 17; view[o + 1] = g * 17; view[o + 2] = b * 17; view[o + 3] = plane;
+        let plane = mk[i] ? onD : offD, pOn = onD, pOff = offD;
+        if ((wipeEdgeX >= 0 && x >= wipeEdgeX) || (wipeEdgeY >= 0 && y >= wipeEdgeY)) plane = pOn = pOff = D;
+        planeRGB(plane, i, x, row, view, o);
+        if (dual) { planeRGB(pOn, i, x, row, this.viewOn, o); planeRGB(pOff, i, x, row, this.viewOff, o); }
       }
     }
     // cascade feedback = this field's composite as the hardware would pass it to a 2nd CVI

@@ -36,11 +36,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 [hidden] { display: none !important; }
 
-.ws { height: 100%; display: grid; grid-template-columns: 264px minmax(0, 1fr) 340px; grid-template-rows: 48px minmax(0, 1fr) auto; grid-template-areas: "top top top" "fx view insp" "tl tl tl"; }
-@media (max-width: 1100px) { .ws { grid-template-columns: 220px minmax(0, 1fr) 300px; } }
+.ws { height: 100%; display: grid; grid-template-columns: 370px minmax(0, 1fr) 280px; grid-template-rows: 48px minmax(0, 1fr) auto; grid-template-areas: "top top top" "insp view fx" "tl tl tl"; }
+@media (max-width: 1100px) { .ws { grid-template-columns: 330px minmax(0, 1fr) 230px; } }
 @media (max-width: 860px) {
   body { overflow: auto; }
-  .ws { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; grid-template-areas: "top" "view" "fx" "insp" "tl"; }
+  .ws { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; grid-template-areas: "top" "view" "insp" "fx" "tl"; }
   .fx, .insp { max-height: none !important; border: 0 !important; border-top: 1px solid var(--line) !important; }
 }
 
@@ -61,7 +61,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- panels ---------- */
 .panel-h { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
-.fx { grid-area: fx; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.fx { grid-area: fx; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .search { margin: 0 12px 8px; height: 30px; border-radius: var(--r); border: 1px solid var(--line); background: var(--bg); padding: 0 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
 .chip { height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line); background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
@@ -121,7 +121,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .tc small { color: var(--faint); font-size: 12px; }
 
 /* ---------- inspector ---------- */
-.insp { grid-area: insp; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; min-height: 0; }
+.insp { grid-area: insp; background: var(--panel); border-right: 1px solid var(--line); overflow: auto; min-height: 0; }
 .sec { border-bottom: 1px solid var(--line); }
 .sec > header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; user-select: none; }
 .sec > header h3 { margin: 0; flex: 1; font-size: 13px; font-weight: 600; }
@@ -226,12 +226,51 @@ textarea { width: 100%; border-radius: var(--r); border: 1px solid var(--line); 
 .empty { padding: 20px 14px; color: var(--dim); }
 .empty h3 { color: var(--text); margin: 0 0 6px; font-size: 14px; }
 
+/* ---------- chain stack (left) ---------- */
+.ch-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+.ch-head h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); flex: 1; }
+.ch-src, .ch-out { margin: 8px 10px; border: 1px dashed var(--line); border-radius: var(--r); }
+.ch-src { padding: 9px 12px; display: flex; align-items: center; gap: 8px; color: var(--dim); cursor: pointer; background: none; width: calc(100% - 20px); text-align: left; }
+.ch-src:hover { color: var(--text); border-color: #44474f; }
+.ch-src b { color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch-flow { display: grid; place-items: center; height: 14px; color: var(--faint); }
+.ch-flow svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; }
+.ccard { margin: 0 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); position: relative; }
+.ccard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ccard.off > .chead .cname { opacity: .45; text-decoration: line-through; }
+.ccard.drop-t::before, .ccard.drop-b::after { content: ""; position: absolute; left: -2px; right: -2px; height: 3px; background: var(--accent); border-radius: 2px; }
+.ccard.drop-t::before { top: -10px; } .ccard.drop-b::after { bottom: -10px; }
+.ccard.dragging { opacity: .35; }
+.chead { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 4px; cursor: pointer; user-select: none; }
+.chead .grip { width: 18px; height: 24px; display: grid; place-items: center; color: var(--faint); cursor: grab; flex: none; }
+.chead .grip svg { width: 12px; height: 16px; fill: currentColor; }
+.chead .chev2 { width: 14px; height: 14px; stroke: var(--dim); fill: none; stroke-width: 2; transition: transform .15s; flex: none; }
+.ccard.closed .chev2 { transform: rotate(-90deg); }
+.chead .num { font: 500 11px var(--mono); color: var(--faint); width: 16px; text-align: right; flex: none; }
+.chead .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chead .cname { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.chead .ib { width: 26px; height: 26px; border: 0; border-radius: 5px; background: none; color: var(--dim); cursor: pointer; display: grid; place-items: center; flex: none; padding: 0; }
+.chead .ib:hover { background: var(--raised); color: var(--text); }
+.chead .ib svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; }
+.chead .ib.pw.on { color: var(--accent); }
+.cbody { border-top: 1px solid var(--line); background: var(--panel); border-radius: 0 0 var(--r) var(--r); }
+.ccard.closed .cbody { display: none; }
+.cbody .cdesc { margin: 0; padding: 10px 12px 0; color: var(--dim); font-size: 12px; }
+.cbody .ctop { display: grid; gap: 8px; padding: 10px 12px; }
+.cbody .sec:last-child { border-bottom: 0; }
+.cbody .sec > header { padding: 8px 12px; }
+.cbody .sec > header h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+.advbtn { display: block; width: calc(100% - 24px); margin: 4px 12px 12px; height: 30px; border-radius: var(--r); border: 1px dashed var(--line); background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
+.advbtn:hover { color: var(--text); border-color: #44474f; }
+.ch-empty { margin: 14px 10px; padding: 16px; border: 1px dashed var(--line); border-radius: var(--r); color: var(--dim); text-align: center; }
+.ch-empty b { display: block; color: var(--text); margin-bottom: 4px; }
+
 /* ---------- timeline ---------- */
 .tl { grid-area: tl; background: var(--panel); border-top: 1px solid var(--line); padding: 6px 12px 10px; min-width: 0; }
 .tl-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 6px; }
 .tl-h h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
 .tl-h p { margin: 0; color: var(--faint); font-size: 12px; flex: 1; min-width: 200px; }
-#timeline { width: 100%; height: 120px; display: block; border-radius: 4px; background: #0e0f11; border: 1px solid var(--line); cursor: pointer; touch-action: none; }
+#timeline { width: 100%; height: 84px; display: block; border-radius: 4px; background: #0e0f11; border: 1px solid var(--line); cursor: pointer; touch-action: none; }
 
 /* ---------- dialogs ---------- */
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; width: min(440px, calc(100vw - 32px)); }
@@ -301,15 +340,10 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line); border-bottom-width
 
   <aside class="insp" id="insp" aria-label="Inspector"></aside>
 
-  <section class="tl" aria-label="Chain and automation">
-    <div class="tl-h">
-      <div class="tabs small" role="tablist"><button type="button" class="tab on" data-btab="chain" role="tab">Effect chain</button><button type="button" class="tab" data-btab="auto" role="tab">Automation <span id="autoCount"></span></button></div>
-      <p id="tlNote"></p>
-      <button class="btn ghost" id="btnClearChain" type="button">Clear chain</button>
-      <button class="btn ghost" id="btnClearAuto" type="button" hidden>Clear automation</button>
-    </div>
-    <div id="chainPane" class="chainpane"><div class="strip" id="strip"></div></div>
-    <div id="autoPane" hidden><canvas id="timeline"></canvas></div>
+  <section class="tl" aria-label="Automation">
+    <div class="tl-h"><h3>Automation <span id="autoCount"></span></h3><p id="tlNote"></p>
+      <button class="btn ghost" id="btnClearAuto" type="button">Clear automation</button></div>
+    <canvas id="timeline"></canvas>
   </section>
 </div>
 

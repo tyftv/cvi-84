@@ -336,9 +336,11 @@ const FADERS = [
   ['rate1', 'Rate 1', '--cap-rate', 'fg2'], ['rate2', 'Rate 2', '--cap-rate', 'fg2'],
   ['hpan', 'H pan', '--cap-geo', 'fg3', 1], ['vpan', 'V pan', '--cap-geo', 'fg3', 1], ['stretch', 'Stretch', '--cap-geo', 'fg3', 1], ['zoom', 'Zoom', '--cap-geo', 'fg3'],
 ];
+const FADER_TIPS = {"hue": "HUE: the colour (around the colour wheel) used by Colourize and paint", "sat": "SATURATION: how strong that colour is. All the way down = black and white", "val": "VALUE: brightness of the colour", "depth": "COLOUR DEPTH: strength of Colourize and paint blends. Centre = off, up = positive effect, down = negative effect", "rate1": "RATE 1: speed of random colour changes and colour crawl", "rate2": "RATE 2: speed of strobe, burst, shatter flicker and glide", "hpan": "H PAN: moves the picture left/right. With mirror on, moves the mirror line. With slide on, sets scroll speed", "vpan": "V PAN: moves the picture up/down. With mirror on, moves the mirror line. With slide on, sets scroll speed", "stretch": "STRETCH: makes pixels wide (up) or tall (down)", "zoom": "ZOOM: pixel size. On live video this is the mosaic/pixelate effect"};
+const BUTTON_TIPS = {"freeze": "FREEZE: holds the picture. In Single freeze mode, grabs one frame each press", "preset": "PRESET: press, then type two digits to load a preset (e.g. 5 9 = Trail). PRESET then FREEZE saves over the current preset", "menu": "MENU: opens the blue menu pages where every mode is chosen", "stop": "STOP: stops running wipes and fills, cancels preset entry, closes menus", "draw": "DRAW: hold it (or the D key) and drag on the monitor to paint", "drawLock": "DRAW LOCK: painting stays on without holding DRAW. In menus: next page", "colourize": "0 COLOURIZE: turns the colour effect on/off (type chosen in VIDEO menu 5)", "drawColour": "1 DRAW COLOUR: painting puts colour into the picture", "drawStencil": "2 DRAW STENCIL: painting draws the invisible mask (stencil) instead of colour", "useTexture": "3 USE TEXTURE: paint only where the chosen texture pattern is", "wipeColour": "4 WIPE COLOUR: runs the colour wipe chosen in PAINT menu 7", "wipeStencil": "5 WIPE STENCIL: runs the stencil wipe chosen in PAINT menu 8", "pick": "6 PICK COLOUR: next click on the monitor picks a colour into the HSV sliders", "title": "7 TITLE: next click on the monitor stamps your text (set in PAINT menu 9)", "useStencil": "8 USE STENCIL: turns the mask on so inside and outside can show different things", "invertStencil": "9 INVERT STENCIL: swaps inside and outside of the mask"};
 const faderEls = {};
 for (const [p, label, cap, group, bipolar] of FADERS) {
-  const el = document.createElement('div'); el.className = 'fader';
+  const el = document.createElement('div'); el.className = 'fader'; el.title = FADER_TIPS[p] || label;
   el.innerHTML = `<output>000</output><div class="track" tabindex="0" role="slider" aria-label="${label}" aria-valuemin="0" aria-valuemax="255">${Array.from({ length: 11 }, (_, i) => `<i class="tick${i === 5 && bipolar ? ' mid' : ''}" style="top:${6 + i * 13.8}px"></i>`).join('')}<div class="cap" style="--cap:var(${cap})"></div></div><label>${label}</label>`;
   $(group).appendChild(el);
   const track = el.querySelector('.track');
@@ -364,7 +366,7 @@ const BUTTONS = [
 const btnEls = {};
 for (const [label, id, num] of BUTTONS) {
   const b = document.createElement('button'); b.type = 'button'; b.className = 'hb' + (id === 'stop' ? ' red' : '');
-  b.innerHTML = (num != null ? `<span class="num">${num}</span>` : '') + label;
+  b.innerHTML = (num != null ? `<span class="num">${num}</span>` : '') + label; b.title = BUTTON_TIPS[id] || label;
   if (id === 'draw') {
     b.addEventListener('pointerdown', () => { drawHeld = true; b.classList.add('held'); uiDirty = true; });
     const up = () => { drawHeld = false; b.classList.remove('held'); uiDirty = true; };
@@ -433,7 +435,7 @@ const PAGES = {
 };
 const menuEl = $('menu');
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function itemBtn(label, on, data) { return `<button type="button" class="it${on ? ' on' : ''}" ${data}>${esc(label)}</button>`; }
+function itemBtn(label, on, data) { return `<button type="button" class="it${on ? ' on' : ''}" title="Click or press its number to choose" ${data}>${esc(label)}</button>`; }
 let lastMenuHTML = '';
 function renderMenu() {
   menuEl.hidden = !menuOpen;
