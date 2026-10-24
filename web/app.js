@@ -4,6 +4,8 @@ import { Renderer, LOOK_DEFAULTS } from './gl.js';
 import { Automation } from './automation.js';
 import { probePlayable, convertToMp4, VIDEO_ACCEPT, looksLikeVideo } from './convert.js';
 import { Chain, MODULES, CATEGORIES, renderChain } from './chain.js';
+import * as TL from './timeline.js';
+const { tl: TLS, clipAt, clipEnd, clipLen } = TL;
 
 const $ = (id) => document.getElementById(id);
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -19,7 +21,7 @@ let fieldRate = 50;
 let playing = false, recArm = false, loop = false;
 let startSnap = null;
 let uiDirty = true, inspDirty = true, stripDirty = true;
-const src = { v1: null, v2: null };
+let T = 0; // playhead, in timeline seconds
 const undoStack = [];
 let curFrameTex = null;
 
@@ -55,16 +57,14 @@ async function analyseAudio(file) {
   } catch { return null; }
 }
 function audioAt(f) {
-  const env = src.v1 && src.v1.env;
+  const c = clipAt(0, f / fieldRate), env = c && c.media.env;
   if (!env) { const beat = (f / fieldRate) * 2, ph = beat - Math.floor(beat); return { b: Math.exp(-ph * 6), m: 0.4 + 0.3 * Math.sin(f / fieldRate * 3.1), t: 0.3 + 0.3 * Math.sin(f / fieldRate * 7.3) }; }
-  const i = Math.min(env.b.length - 1, Math.floor(f / fieldRate * 100));
+  const i = Math.max(0, Math.min(env.b.length - 1, Math.floor((c.in + f / fieldRate - c.start) * 100)));
   return { b: env.b[i] || 0, m: env.m[i] || 0, t: env.t[i] || 0 };
 }
 
 // ================================================================ sources + grid
-const v1Source = () => (src.v1 && src.v1.el.readyState >= 2 ? src.v1.el : demo);
-const v2Source = () => (src.v2 && src.v2.el.readyState >= 2 ? src.v2.el : null);
-function srcDims() { const e = src.v1 && src.v1.el; return e && e.videoWidth ? [e.videoWidth, e.videoHeight] : [640, 480]; }
+function srcDims() { return TLS.proj || [640, 480]; }
 function gridFor(w, h, level) { const s = DETAIL[level] || 256; return w >= h ? [Math.round(s * w / h), s] : [s, Math.round(s * h / w)]; }
 function rebuildGrid() {
   const [w, h] = gridFor(...srcDims(), settings.detail);
@@ -92,48 +92,68 @@ function layoutScreen() {
 new ResizeObserver(layoutScreen).observe(screenEl.parentElement);
 
 function setBusy(msg, p) { const b = $('busy'); if (msg == null) { b.hidden = true; return; } b.hidden = false; $('busyMsg').textContent = msg; $('busyBar').style.width = `${Math.round((p || 0) * 100)}%`; }
-async function importVideo(which, file) {
-  if (!file) return;
-  if (!looksLikeVideo(file)) { toast(`${file.name} doesn't look like a video file`); return; }
-  try {
-    setBusy('Checking ' + file.name + '…', 0);
-    if (!(await probePlayable(file))) file = await convertToMp4(file, (msg, p) => setBusy(`${msg} ${p ? Math.round(p * 100) + '%' : ''}`, p));
-    await loadVideo(which, file);
-  } catch (e) { toast(e.message || 'That file could not be opened'); }
-  finally { setBusy(null); }
+// import one or more files onto a track (0 = Video 1, 1 = Video 2); opts.at / opts.index place it
+async function importVideo(track, files, opts = {}) {
+  files = [...(files instanceof File ? [files] : files || [])];
+  if (track === 'v1') track = 0; if (track === 'v2') track = 1;
+  let added = 0;
+  for (const f0 of files) {
+    let file = f0;
+    if (!looksLikeVideo(file)) { toast(`${file.name} doesn't look like a video file`); continue; }
+    try {
+      setBusy('Checking ' + file.name + '…', 0);
+      if (!(await probePlayable(file))) file = await convertToMp4(file, (msg, p) => setBusy(`${msg} ${p ? Math.round(p * 100) + '%' : ''}`, p));
+      await loadVideo(track, file, opts);
+      if (opts.index != null) opts.index++;
+      if (opts.at != null) opts.at = null;
+      added++;
+    } catch (e) { toast(e.message || `${file.name} could not be opened`); }
+    finally { setBusy(null); }
+  }
+  return added;
 }
-async function loadVideo(which, file) {
-  const el = document.createElement('video');
-  el.src = URL.createObjectURL(file); el.playsInline = true; el.preload = 'auto';
-  if (which === 'v2') el.muted = true;
-  await new Promise((res, rej) => { el.onloadeddata = res; el.onerror = () => rej(new Error('That file could not be decoded by this browser.')); });
-  if (src[which]) { src[which].el.pause(); URL.revokeObjectURL(src[which].el.src); }
-  src[which] = { el, file, env: null, name: file.name };
-  if (which === 'v1') {
-    pause(); el.currentTime = 0;
-    el.onended = () => { if (loop) { home(); play(); } else pause(); };
-    $('srcName').textContent = file.name; $('drop').hidden = true;
+async function loadVideo(track, file, opts = {}) {
+  if (track === 'v1') track = 0; if (track === 'v2') track = 1;
+  const m = await TL.addMedia(file);
+  analyseAudio(file).then((env) => { m.env = env; });
+  const first = !TLS.proj;
+  pushTlUndo();
+  const c = TL.makeClip(m);
+  TL.insertClip(c, track, opts);
+  if (first) {
+    TLS.proj = [m.w, m.h];
+    pause(); T = 0;
+    $('drop').hidden = true;
     startSnap = null;
     if (!rebuildGrid()) chain.clearBuffers();
     chain.setField(0);
     fitPreview();
-    analyseAudio(file).then((env) => { if (src.v1 && src.v1.file === file) src.v1.env = env; });
-    toast('Loaded ' + file.name);
-  } else { el.loop = true; el.play().catch(() => {}); toast('Video 2: ' + file.name); }
+  }
+  timelineChanged();
+  selClip = c;
+  toast(`Added ${file.name} to ${track ? 'Video 2' : 'Video 1'}`);
+  return c;
+}
+function timelineChanged() {
+  TL.restack();
+  const d = TL.duration();
+  if (T > d) T = d;
+  $('srcName').textContent = TL.hasClips() ? `${TLS.tracks[0].length + TLS.tracks[1].length} clip${TLS.tracks[0].length + TLS.tracks[1].length === 1 ? '' : 's'} · ${fmtShort(d)}` : 'No video loaded';
+  $('drop').hidden = TL.hasClips();
   uiDirty = inspDirty = stripDirty = true;
 }
-for (const id of ['fileV1', 'fileV2']) $(id).accept = VIDEO_ACCEPT;
+for (const id of ['fileV1', 'fileV2']) { $(id).accept = VIDEO_ACCEPT; $(id).multiple = true; }
 $('btnImport').onclick = () => $('fileV1').click();
 $('btnImportV2').onclick = () => $('fileV2').click();
-$('fileV1').onchange = (e) => { importVideo('v1', e.target.files[0]); e.target.value = ''; };
-$('fileV2').onchange = (e) => { importVideo('v2', e.target.files[0]); e.target.value = ''; };
+$('fileV1').onchange = (e) => { importVideo(0, e.target.files); e.target.value = ''; };
+$('fileV2').onchange = (e) => { importVideo(1, e.target.files); e.target.value = ''; };
 screenEl.addEventListener('dragover', (e) => { e.preventDefault(); screenEl.classList.add('dragging'); });
 screenEl.addEventListener('dragleave', () => screenEl.classList.remove('dragging'));
-screenEl.addEventListener('drop', (e) => { e.preventDefault(); screenEl.classList.remove('dragging'); const f = [...e.dataTransfer.files].find(looksLikeVideo); if (f) importVideo('v1', f); else toast('Drop a video file'); });
+screenEl.addEventListener('drop', (e) => { e.preventDefault(); screenEl.classList.remove('dragging'); const f = [...e.dataTransfer.files].filter(looksLikeVideo); if (f.length) importVideo(0, f); else toast('Drop a video file'); });
 
 // ================================================================ actions + automation
 const recording = () => recArm && playing;
-const curField = () => (cviNodes()[0] ? chain.engine(cviNodes()[0].id).field : Math.floor((src.v1 ? src.v1.el.currentTime : 0) * fieldRate));
+const curField = () => (cviNodes()[0] ? chain.engine(cviNodes()[0].id).field : Math.floor(T * fieldRate));
 // set one block's parameter (recorded as "<id>|<param>")
 function setNodeParam(node, k, v) {
   if (!node) return;
@@ -156,7 +176,7 @@ function applyNodeAuto(node, f, au, ch) {
   if (e) for (const a of au.eventsFor(node.id, f)) e.dispatch(a);
 }
 function pushUndo(node = selNode()) { const e = node && chain.engine(node.id); if (!e || recording()) return; undoStack.push({ id: node.id, store: e.store.slice(), stencil: e.stencil.slice() }); if (undoStack.length > 30) undoStack.shift(); }
-function undo() { const u = undoStack.pop(); const e = u && chain.engine(u.id); if (!e) { toast('Nothing to undo'); return; } e.store.set(u.store); e.stencil.set(u.stencil); toast('Undone'); }
+function undo() { const u = undoStack.pop(); if (u && u.tl) { TL.restore(u.tl); if (selClip && TL.trackOf(selClip) < 0) selClip = null; timelineChanged(); seek(T); toast('Undone'); return; } const e = u && chain.engine(u.id); if (!e) { toast('Nothing to undo'); return; } e.store.set(u.store); e.stencil.set(u.stencil); toast('Undone'); }
 
 // ================================================================ chain editing
 function addBlock(type, opts = {}) {
@@ -172,7 +192,7 @@ function addBlock(type, opts = {}) {
 }
 // find the backdrop colour from the edges of the frame, like clicking it with the eyedropper
 function detectKey(node, announce) {
-  const e = chain.engine(node.id); if (!e || !src.v1 || !renderer.targets.has('src')) { if (announce) toast('Import a video first'); return; }
+  const e = chain.engine(node.id); if (!e || !TL.hasClips() || !renderer.targets.has('src')) { if (announce) toast('Import a video first'); return; }
   const W = chain.W, H = chain.H, d = renderer.grab(renderer.target('src').t, W, H);
   const bins = new Array(36).fill(0), sums = new Array(36).fill(0); let lumSum = 0, n = 0, satSum = 0;
   const take = (x, y) => {
@@ -312,14 +332,14 @@ function applyPreset(num) {
 }
 function loadChain(json, name) {
   chain = Chain.from(json, chain.W, chain.H);
-  chain.setField(Math.floor((src.v1 ? src.v1.el.currentTime : 0) * fieldRate));
+  chain.setField(Math.floor(T * fieldRate));
   auto.clear(); startSnap = null; selected = chain.nodes[0]?.id || null;
   stripDirty = inspDirty = uiDirty = true; toast('Loaded ' + name);
 }
 
 // ================================================================ transport
-const duration = () => (src.v1 ? src.v1.el.duration || 0 : 0);
-const curTime = () => (src.v1 ? src.v1.el.currentTime : 0);
+const duration = () => TL.duration();
+const curTime = () => T;
 function syncFieldToTime(t) {
   const f = Math.floor(t * fieldRate + 1e-6);
   chain.setField(f); auto.resetCursors();
@@ -329,18 +349,16 @@ function syncFieldToTime(t) {
 function takeStartSnapshot() { chain.setField(0); startSnap = chain.snapshot(); }
 function exportBase() { return startSnap && !auto.isEmpty() ? startSnap : chain.snapshot(); }
 function play() {
-  if (!src.v1) { toast('Import a video to use the timeline'); return; }
-  const t = curTime();
-  if (t < 1 / fieldRate) takeStartSnapshot();
-  syncFieldToTime(t);
-  playing = true;
-  src.v1.el.play().catch((e) => { playing = false; toast(e.message); });
-  if (src.v2) src.v2.el.play().catch(() => {});
-  src.v1.el.requestVideoFrameCallback(onVideoFrame);
+  if (!TL.hasClips()) { toast('Import a video to use the timeline'); return; }
+  if (T >= duration() - 1 / fieldRate) T = 0;
+  if (T < 1 / fieldRate) takeStartSnapshot();
+  syncFieldToTime(T);
+  playing = true; lastTick = performance.now();
+  TL.syncMedia(T, true);
   uiDirty = true;
 }
-function pause() { playing = false; auto.releaseAll(); if (src.v1) src.v1.el.pause(); uiDirty = true; }
-function seek(t) { if (!src.v1) return; t = Math.max(0, Math.min(duration() || 0, t)); src.v1.el.currentTime = t; syncFieldToTime(t); }
+function pause() { playing = false; auto.releaseAll(); TL.pauseAll(); uiDirty = true; }
+function seek(t) { if (!TL.hasClips()) return; T = Math.max(0, Math.min(duration() || 0, t)); syncFieldToTime(T); TL.syncMedia(T, playing); }
 function home() {
   seek(0);
   if (!startSnap) return;
@@ -368,29 +386,66 @@ function advanceLive(e, node, inputs) {
   }
 }
 function applyLookAuto(f, ch, au) { for (const n of ch.nodes) if (ch.kind(n) !== 'cvi') for (const [k, v] of au.valuesFor(n.id, f)) ch.setParam(n, k, v); }
+// fit a clip's picture into the project shape (letterbox when the shapes differ)
+const fitCanvas = [document.createElement('canvas'), document.createElement('canvas')];
+const black = document.createElement('canvas'); black.width = black.height = 2;
+{ const g = black.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, 2, 2); }
+function fitted(k, img, iw, ih) {
+  const [pw, ph] = srcDims();
+  if (Math.abs(iw / ih - pw / ph) < 0.01) return img;
+  const cv = fitCanvas[k], W = renderer.w || 640, H = renderer.h || 480;
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  const s = Math.min(W / iw, H / ih), dw = iw * s, dh = ih * s;
+  g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  return cv;
+}
+// upload what each track shows at the playhead; returns whether Video 2 has a picture
+function uploadTracks() {
+  const c1 = clipAt(0, T);
+  if (!c1) renderer.uploadSource('analog', black);
+  else if (c1.el.readyState >= 2) renderer.uploadSource('analog', fitted(0, c1.el, c1.el.videoWidth || c1.media.w, c1.el.videoHeight || c1.media.h));
+  const c2 = clipAt(1, T);
+  if (c2 && c2.el.readyState >= 2) renderer.uploadSource('v2', fitted(1, c2.el, c2.el.videoWidth || c2.media.w, c2.el.videoHeight || c2.media.h));
+  return !!c2;
+}
 function drawFrame() {
   if (renderer.w === 0) fitPreview();
-  renderer.uploadSource('analog', v1Source());
-  const v2 = v2Source(); if (v2) renderer.uploadSource('v2', v2);
+  const hasV2 = TL.hasClips() ? uploadTracks() : (renderer.uploadSource('analog', demo), false);
   if (!freeSteps) applyLookAuto(targetField, chain, auto);
-  curFrameTex = renderChain(chain, renderer, { advance: advanceLive, hasV2: !!v2, frame: targetField, blanking: settings.blanking, smooth: settings.smooth });
+  curFrameTex = renderChain(chain, renderer, { advance: advanceLive, hasV2, frame: targetField, blanking: settings.blanking, smooth: settings.smooth });
   renderer.present(curFrameTex);
 }
-function onVideoFrame(now, meta) {
-  if (!playing) return;
-  targetField = Math.floor(meta.mediaTime * fieldRate + 1e-6); freeSteps = 0;
-  drawFrame(); uiDirty = true;
-  src.v1.el.requestVideoFrameCallback(onVideoFrame);
+// while playing, the Video 1 clip's own clock leads (keeps sound in step); gaps run on the wall clock
+function advancePlayhead(dt) {
+  const prev = T;
+  T = prev + dt;
+  const c = clipAt(0, prev);
+  if (c && !c.el.paused && !c.el.seeking && c.el.readyState >= 3) {
+    const m = c.start + c.el.currentTime - c.in;
+    if (Math.abs(m - T) < 0.5) T = Math.max(prev, m);
+  }
+  const d = duration();
+  if (T >= d) {
+    if (loop) { home(); TL.syncMedia(T, true); return; }
+    T = d; pause();
+  }
 }
 let lastTick = performance.now(), freeAcc = 0, demoT = 0;
 function tick(now) {
   const dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
-  if (!playing) {
+  if (playing) {
+    advancePlayhead(dt);
+    TL.syncMedia(T, playing);
+    targetField = Math.floor(T * fieldRate + 1e-6); freeSteps = 0;
+    drawFrame(); uiDirty = true;
+  } else {
+    TL.syncMedia(T, false);
     freeAcc += dt * fieldRate;
     freeSteps = Math.min(4, Math.floor(freeAcc)); freeAcc -= Math.floor(freeAcc);
     targetField = curField();
     if (freeSteps || !curFrameTex) drawFrame(); else renderer.present(curFrameTex);
-    if (src.v1) chain.setField(Math.floor(curTime() * fieldRate));
+    if (TL.hasClips()) chain.setField(Math.floor(T * fieldRate));
     freeSteps = 0;
   }
   if ((stripDirty || inspDirty) && !$('insp').contains(document.activeElement)) { const st = $('insp').scrollTop; stripDirty = inspDirty = false; buildChainPanel(); $('insp').scrollTop = st; buildPresetsHint(); }
@@ -412,7 +467,7 @@ function buildChainPanel() {
   const head = h(`<div class="ch-head"><h2>Effect chain</h2><button type="button" class="btn ghost" id="btnClearChain">Clear</button></div>`);
   head.querySelector('button').onclick = () => { for (const n of [...chain.nodes]) removeBlock(n.id); toast('Chain cleared'); };
   host.appendChild(head);
-  const srcRow = h(`<button type="button" class="ch-src" title="Import a video">Video 1&nbsp;<b>${src.v1 ? esc(src.v1.name) : 'none, click to import'}</b></button>`);
+  const srcRow = h(`<button type="button" class="ch-src" title="Add clips to Video 1">Video 1&nbsp;<b>${TLS.tracks[0].length ? (TLS.tracks[0].length === 1 ? esc(TLS.tracks[0][0].media.name) : TLS.tracks[0].length + ' clips on the timeline') : 'none, click to import'}</b></button>`);
   srcRow.onclick = () => $('fileV1').click();
   host.appendChild(srcRow);
   if (!chain.nodes.length) host.appendChild(h(`<div class="ch-empty"><b>No effects yet</b>Click an effect in the library on the right to add it here. Effects run from top to bottom, like layers in Premiere.</div>`));
@@ -756,7 +811,7 @@ const SECTIONS = {
     const fillColour = () => { act(node, { k: 'storeFill', c: hsvRgb(chain.getParam(node, 'hue') / 255, chain.getParam(node, 'sat') / 255, chain.getParam(node, 'val') / 255) }); };
     const set = (bg) => {
       node.bg = bg;
-      if (bg === 'v2') { setNodeParam(node, 'display', 5); setNodeParam(node, 'digSrc', 1); setNodeParam(node, 'colourize', 0); if (!src.v2) toast('Import Video 2 from the top bar'); }
+      if (bg === 'v2') { setNodeParam(node, 'display', 5); setNodeParam(node, 'digSrc', 1); setNodeParam(node, 'colourize', 0); if (!TLS.tracks[1].length) toast('Put a clip on the Video 2 track (+ Video 2 clip, top bar)'); }
       else { setNodeParam(node, 'display', 2); setNodeParam(node, 'digSrc', 0); if (bg === 'black') act(node, { k: 'storeFill', c: [0, 0, 0] }); if (bg === 'colour') fillColour(); if (bg === 'canvas') toast('Paint, fill or freeze into this block to build the background'); }
       uiDirty = true;
     };
@@ -838,7 +893,7 @@ const SECTIONS = {
     slider(b, { p: 'vpan', label: 'Centre Y', fmt: pct, reset: 128 });
   },
   inputs(b) {
-    note(b, src.v2 ? `Video 2: ${esc(src.v2.name)}` : 'Import Video 2 from the top bar (+ Video 2) for this effect.');
+    note(b, TLS.tracks[1].length ? 'Video 2 is the lower track on the timeline.' : 'Put a clip on the Video 2 track (+ Video 2 clip, top bar) for this effect.');
     seg(b, { p: 'digSrc', label: 'CVI video', opts: [[0, 'Video 1'], [1, 'Video 2']] });
     seg(b, { p: 'anaSrc', label: 'Clean video', opts: [[0, 'Video 1'], [1, 'Video 2']] });
     seg(b, { p: 'keySrc', label: 'Key from', opts: [[0, 'Video 1'], [1, 'Video 2']] });
@@ -945,14 +1000,16 @@ function syncUI() {
   $('playIcon').innerHTML = playing ? '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>' : '<path d="M4 2l10 6-10 6z"/>';
   const lanes = auto.lanes.size + (auto.events.length ? 1 : 0);
   $('autoCount').textContent = lanes ? `(${lanes})` : '';
-  $('tlNote').textContent = recording() ? 'Recording: every change is written to the timeline.' : recArm ? 'Armed. Press play to record.' : 'Press Record, then play: every change you make is replayed on export.';
+  $('tlNote').textContent = recording() ? 'Recording: every change is written to the timeline.' : recArm ? 'Armed. Press play to record.' : (TL.hasClips() ? 'Click a clip to select it · drag to move · drag its ends to trim · S splits at the playhead' : 'Import clips to fill the timeline');
 }
 let toastTimer;
 function toast(m) { const t = $('toast'); t.textContent = m; t.style.opacity = 1; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.opacity = 0; }, 2200); }
 
 // ================================================================ automation timeline
 const tl = $('timeline'), tctx = tl.getContext('2d');
-const LABEL_W = 170, RULER_H = 20, ROW_H = 18;
+const LABEL_W = 150, RULER_H = 22, TRACK_H = 50, TRACK_GAP = 4, AUTO_HEAD = 22, ROW_H = 18;
+const TRACK_Y = [RULER_H + 2, RULER_H + 2 + TRACK_H + TRACK_GAP];
+const LANES_Y = TRACK_Y[1] + TRACK_H + 6;
 const PARAM_LABELS = { hue: 'Hue', sat: 'Saturation', val: 'Brightness', depth: 'Intensity', rate1: 'Speed', rate2: 'Rate', hpan: 'Position X', vpan: 'Position Y', stretch: 'Stretch', zoom: 'Pixelate', display: 'Routing', colourize: 'Colorize', colourizeType: 'Colour style', freezeMode: 'Freeze mode', freeze: 'Freeze', useStencil: 'Mask on', invertStencil: 'Invert', stencilSource: 'Mask from', bypass: 'On/off', mix: 'Amount' };
 function laneList() { const l = [...auto.lanes.keys()].filter((x) => chain.get(x.split('|')[0])); if (auto.events.length) l.push('#events'); return l; }
 function laneLabel(l) {
@@ -960,31 +1017,88 @@ function laneLabel(l) {
   const [id, k] = l.split('|'); const n = chain.get(id);
   return `${n ? n.name : '?'}: ${PARAM_LABELS[k] || k.replace(/([A-Z])/g, ' $1').toLowerCase()}`;
 }
+// visible window of the timeline: zoom 1 = whole project fits
+const view = { zoom: 1, t0: 0 };
+let selClip = null, tlDrag = null, tlHover = null;
+function tlGeom() {
+  const cssW = tl.clientWidth, W = Math.max(50, cssW - LABEL_W - 12), dur = duration();
+  const full = Math.max(dur, 1) * 1.04, span = tlDrag && tlDrag.span ? tlDrag.span : full / view.zoom;
+  if (!(tlDrag && tlDrag.span)) view.t0 = Math.max(0, Math.min(view.t0, full - span));
+  return { cssW, W, dur, span, X: (t) => LABEL_W + ((t - view.t0) / span) * W, Tm: (x) => view.t0 + ((x - LABEL_W) / W) * span };
+}
+const SPK = new Path2D('M3 6h3l4-3v10l-4-3H3z'), SPK_ON = new Path2D('M12 5.5a3.5 3.5 0 010 5M13.5 3.5a6.5 6.5 0 010 9'), SPK_OFF = new Path2D('M12 6l4 4M16 6l-4 4');
+function drawClip(g, c, k, x0, x1, y, { ghost = false, sel = false } = {}) {
+  const hh = TRACK_H - 6, yy = y + 3, w = Math.max(2, x1 - x0);
+  const col = k ? '#7c5cff' : '#3b82f6';
+  g.save();
+  g.globalAlpha = ghost ? 0.55 : 1;
+  g.beginPath(); g.roundRect(x0 + 0.5, yy, w - 1, hh, 5); g.clip();
+  g.fillStyle = k ? '#241d3d' : '#16243d'; g.fillRect(x0, yy, w, hh);
+  const m = c.media, tw = Math.max(20, hh * m.w / m.h), { span, W } = tlGeom(), pxs = W / span;
+  if (m.thumbs.length) for (let x = x0; x < x1; x += tw) { const img = thumbAt(m, c.in + (x - x0 + tw / 2) / pxs); if (img) g.drawImage(img, x, yy, tw, hh); }
+  g.fillStyle = '#0009'; g.fillRect(x0, yy, w, 17);
+  g.fillStyle = '#fff'; g.font = '500 11px Geist, system-ui, sans-serif'; g.textBaseline = 'middle';
+  if (w > 30) g.fillText(m.name.replace(/\.[^.]+$/, '') + `  ${fmtShort(clipLen(c))}`, x0 + 7, yy + 9, w - 12);
+  g.restore();
+  g.save();
+  g.lineWidth = sel ? 2 : 1; g.strokeStyle = sel ? '#ffd23f' : col;
+  g.beginPath(); g.roundRect(x0 + 0.5, yy + 0.5, w - 1, hh - 1, 5); g.stroke();
+  if (sel && w > 16) { g.fillStyle = '#ffd23f'; g.fillRect(x0 + 2, yy + hh / 2 - 8, 3, 16); g.fillRect(x1 - 5, yy + hh / 2 - 8, 3, 16); }
+  g.restore();
+}
 function drawTimeline() {
   const lanes = laneList();
-  const cssH = Math.max(120, RULER_H + 6 + lanes.length * ROW_H + 6);
-  const dpr = window.devicePixelRatio || 1, cssW = tl.clientWidth;
-  const H = Math.min(cssH, 220);
-  if (tl.width !== Math.round(cssW * dpr) || tl.height !== Math.round(H * dpr)) { tl.style.height = H + 'px'; tl.width = Math.round(cssW * dpr); tl.height = Math.round(H * dpr); }
+  const cssH = Math.min(340, LANES_Y + AUTO_HEAD + Math.max(1, lanes.length) * ROW_H + 6);
+  const dpr = window.devicePixelRatio || 1;
+  const { cssW, W, dur, span, X } = tlGeom();
+  if (tl.width !== Math.round(cssW * dpr) || tl.height !== Math.round(cssH * dpr)) { tl.style.height = cssH + 'px'; tl.width = Math.round(cssW * dpr); tl.height = Math.round(cssH * dpr); }
   const g = tctx; g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.fillStyle = '#0e0f11'; g.fillRect(0, 0, cssW, H);
-  const dur = duration(), W = cssW - LABEL_W - 10;
-  const X = (t) => LABEL_W + (dur ? t / dur : 0) * W;
+  g.fillStyle = '#0e0f11'; g.fillRect(0, 0, cssW, cssH);
   g.font = '12px Geist, system-ui, sans-serif'; g.textBaseline = 'middle';
+  // ruler
   g.fillStyle = '#18191d'; g.fillRect(0, 0, cssW, RULER_H);
   if (dur) {
-    const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => (W / dur) * s > 56) || 600;
+    const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find((st) => (W / span) * st > 60) || 1200;
     g.fillStyle = '#6c6e78';
-    for (let t = 0; t <= dur + 1e-6; t += step) { const x = X(t); g.fillRect(x, RULER_H - 5, 1, 5); g.fillText(step < 1 ? `${fmtShort(t)}.${Math.round((t % 1) * 10)}` : fmtShort(t), x + 3, RULER_H / 2); }
-  } else { g.fillStyle = '#6c6e78'; g.fillText('Import a video to record automation against it', LABEL_W, RULER_H / 2); }
-  if (!lanes.length && dur) { g.fillStyle = '#6c6e78'; g.fillText('Nothing recorded yet. Press Record, then play, and move any control.', LABEL_W, RULER_H + 24); }
+    for (let t = Math.floor(view.t0 / step) * step; t <= view.t0 + span + 1e-6; t += step) { const x = X(t); if (x < LABEL_W - 1) continue; g.fillRect(x, RULER_H - 6, 1, 6); g.fillText(step < 1 ? `${fmtShort(t)}.${String(Math.round((t % 1) * 100)).padStart(2, '0').slice(0, step < 0.25 ? 2 : 1)}` : fmtShort(t), x + 3, RULER_H / 2); }
+  } else { g.fillStyle = '#6c6e78'; g.fillText('Import video to start', LABEL_W, RULER_H / 2); }
+  // tracks
+  const names = [['Video 1', 'top · effects apply'], ['Video 2', 'underneath']];
+  for (let k = 0; k < 2; k++) {
+    const y = TRACK_Y[k];
+    g.fillStyle = '#131417'; g.fillRect(0, y, cssW, TRACK_H);
+    g.fillStyle = '#e8e8ec'; g.font = '600 12px Geist, system-ui, sans-serif'; g.fillText(names[k][0], 10, y + 17);
+    g.fillStyle = '#6c6e78'; g.font = '11px Geist, system-ui, sans-serif'; g.fillText(names[k][1], 10, y + 33, LABEL_W - 44);
+    g.save(); g.translate(LABEL_W - 32, y + TRACK_H / 2 - 8); g.strokeStyle = TLS.mute[k] ? '#ff8a80' : '#9a9ca6'; g.fillStyle = g.strokeStyle; g.lineWidth = 1.4; g.fill(SPK); g.stroke(TLS.mute[k] ? SPK_OFF : SPK_ON); g.restore();
+    g.save(); g.beginPath(); g.rect(LABEL_W, y, cssW - LABEL_W, TRACK_H); g.clip();
+    if (!TLS.tracks[k].length) { g.fillStyle = '#4b4d55'; g.font = '12px Geist, system-ui, sans-serif'; g.fillText(k ? 'Optional: a clip here shows through wherever Video 1 is keyed out (Chroma key, Trail, Wipe…)' : 'Import or drop clips here. Drag to reorder, drag the ends to trim.', LABEL_W + 10, y + TRACK_H / 2); }
+    for (const c of TLS.tracks[k]) { if (tlDrag && tlDrag.mode === 'move' && tlDrag.clip === c && tlDrag.moved) continue; const x0 = X(c.start), x1 = X(clipEnd(c)); if (x1 < LABEL_W || x0 > cssW) continue; drawClip(g, c, k, x0, x1, y, { sel: c === selClip }); }
+    g.restore();
+  }
+  // drag preview
+  if (tlDrag && tlDrag.mode === 'move' && tlDrag.moved) {
+    const d = tlDrag, len = clipLen(d.clip);
+    g.save(); g.beginPath(); g.rect(LABEL_W, 0, cssW - LABEL_W, cssH); g.clip();
+    if (d.target === 0) { const x = X(d.insertT); g.fillStyle = '#ffd23f'; g.fillRect(x - 1.5, TRACK_Y[0], 3, TRACK_H); }
+    else if (d.target === 1 && d.place != null) { g.fillStyle = '#ffd23f33'; g.fillRect(X(d.place), TRACK_Y[1] + 3, X(d.place + len) - X(d.place), TRACK_H - 6); }
+    const gx = X(d.ghostT), gy = d.ghostY - TRACK_H / 2;
+    drawClip(g, d.clip, d.target ?? d.from, gx, gx + (X(len) - X(0)), gy, { ghost: true, sel: true });
+    g.restore();
+  }
+  // automation lanes
+  const ly = LANES_Y;
+  g.fillStyle = '#18191d'; g.fillRect(0, ly, cssW, AUTO_HEAD);
+  g.fillStyle = '#9a9ca6'; g.font = '600 11px Geist, system-ui, sans-serif'; g.fillText('AUTOMATION', 10, ly + AUTO_HEAD / 2);
+  g.font = '12px Geist, system-ui, sans-serif';
+  if (!lanes.length) { g.fillStyle = '#6c6e78'; g.fillText(dur ? 'Optional. Press Record, then play, and move any control: it is replayed on export.' : '', LABEL_W, ly + AUTO_HEAD + ROW_H / 2); }
   lanes.forEach((lane, i) => {
-    const y = RULER_H + 6 + i * ROW_H; if (y > H) return;
+    const y = ly + AUTO_HEAD + i * ROW_H; if (y > cssH) return;
     g.fillStyle = i % 2 ? '#131417' : '#16171a'; g.fillRect(0, y, cssW, ROW_H);
-    g.fillStyle = '#c9cad1'; g.fillText(laneLabel(lane).slice(0, 25), 8, y + ROW_H / 2);
+    g.fillStyle = '#c9cad1'; g.fillText(laneLabel(lane), 8, y + ROW_H / 2, LABEL_W - 30);
     g.fillStyle = '#ff8a80'; g.fillText('×', LABEL_W - 16, y + ROW_H / 2);
     if (!dur) return;
-    if (lane === '#events') { g.fillStyle = '#4f7bff'; for (const e of auto.events) g.fillRect(X(e.f / fieldRate), y + 4, 2, ROW_H - 8); return; }
+    g.save(); g.beginPath(); g.rect(LABEL_W, y, cssW - LABEL_W, ROW_H); g.clip();
+    if (lane === '#events') { g.fillStyle = '#4f7bff'; for (const e of auto.events) g.fillRect(X(e.f / fieldRate), y + 4, 2, ROW_H - 8); g.restore(); return; }
     const pts = auto.lanes.get(lane);
     const val = (v) => (Array.isArray(v) ? v[0] : +v);
     const nums = pts.map((p) => val(p.v)).filter((v) => !isNaN(v));
@@ -992,21 +1106,144 @@ function drawTimeline() {
     const Y = (v) => y + ROW_H - 3 - ((val(v) - lo) / (hi - lo || 1)) * (ROW_H - 6);
     g.strokeStyle = '#ffb02e'; g.lineWidth = 1.5; g.beginPath();
     pts.forEach((p, j) => { const x = X(p.f / fieldRate); if (j === 0) g.moveTo(LABEL_W, Y(p.v)); g.lineTo(x, j ? Y(pts[j - 1].v) : Y(p.v)); g.lineTo(x, Y(p.v)); });
-    g.lineTo(LABEL_W + W, Y(pts[pts.length - 1].v)); g.stroke();
+    g.lineTo(cssW, Y(pts[pts.length - 1].v)); g.stroke();
+    g.restore();
   });
-  if (dur) { const x = X(curTime()); g.fillStyle = recording() ? '#ff453a' : '#fff'; g.fillRect(x - 1, 0, 2, H); }
+  // playhead
+  if (dur) { const x = X(curTime()); if (x >= LABEL_W - 1) { g.fillStyle = recording() ? '#ff453a' : '#fff'; g.fillRect(x - 1, 0, 2, cssH); g.beginPath(); g.moveTo(x - 6, 0); g.lineTo(x + 6, 0); g.lineTo(x, 8); g.fill(); } }
+  g.fillStyle = '#0e0f11'; g.fillRect(LABEL_W - 1, 0, 1, cssH);
 }
+const thumbAt = TL.thumbAt;
 function updateTC() { const t = curTime(), dur = duration(); $('tc').innerHTML = `${fmtShort(t)}<small>.${String(Math.floor((t % 1) * 100)).padStart(2, '0')}</small>${dur ? ` <small>/ ${fmtShort(dur)}</small>` : ''}`; }
 const fmtShort = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+// ---- timeline editing
+function pushTlUndo() { undoStack.push({ tl: TL.snapshot() }); if (undoStack.length > 50) undoStack.shift(); }
+function tlPoint(e) { const r = tl.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function trackAtY(y) { for (let k = 0; k < 2; k++) if (y >= TRACK_Y[k] && y < TRACK_Y[k] + TRACK_H) return k; return -1; }
+function hitClip(x, y) {
+  const k = trackAtY(y); if (k < 0 || x < LABEL_W) return null;
+  const { X } = tlGeom();
+  for (const c of TLS.tracks[k]) {
+    const x0 = X(c.start), x1 = X(clipEnd(c));
+    if (x >= x0 - 2 && x <= x1 + 2) {
+      const edge = Math.min(8, (x1 - x0) / 4);
+      return { c, k, part: x - x0 < edge ? 'L' : x1 - x < edge ? 'R' : 'body' };
+    }
+  }
+  return null;
+}
+// snap a time to nearby clip edges and the playhead (within 8px)
+function snapT(t, skip, noHead) {
+  const { span, W } = tlGeom(), tol = (8 / W) * span;
+  let best = t, bd = tol;
+  const pts = noHead ? [0] : [0, T]; for (const cl of TLS.tracks) for (const c of cl) if (c !== skip) pts.push(c.start, clipEnd(c));
+  for (const p of pts) if (Math.abs(p - t) < bd) { bd = Math.abs(p - t); best = p; }
+  return best;
+}
 let scrubbing = false;
-const tlTime = (e) => { const r = tl.getBoundingClientRect(); return ((e.clientX - r.left - LABEL_W) / (r.width - LABEL_W - 10)) * duration(); };
 tl.addEventListener('pointerdown', (e) => {
-  const r = tl.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-  if (x < LABEL_W) { const i = Math.floor((y - RULER_H - 6) / ROW_H), lanes = laneList(); if (i >= 0 && i < lanes.length && x > LABEL_W - 26) { auto.clearLane(lanes[i]); uiDirty = true; } return; }
-  scrubbing = true; tl.setPointerCapture(e.pointerId); seek(tlTime(e));
+  const { x, y } = tlPoint(e), { Tm } = tlGeom();
+  tl.setPointerCapture(e.pointerId);
+  if (x < LABEL_W) {
+    const k = trackAtY(y);
+    if (k >= 0 && x > LABEL_W - 40) { pushTlUndo(); TLS.mute[k] = !TLS.mute[k]; toast(`${k ? 'Video 2' : 'Video 1'} sound ${TLS.mute[k] ? 'muted' : 'on'}`); return; }
+    if (k >= 0) { (k ? $('fileV2') : $('fileV1')).click(); return; }
+    const i = Math.floor((y - LANES_Y - AUTO_HEAD) / ROW_H), lanes = laneList();
+    if (i >= 0 && i < lanes.length && x > LABEL_W - 26) { auto.clearLane(lanes[i]); uiDirty = true; }
+    return;
+  }
+  const hit = hitClip(x, y);
+  if (hit) {
+    selClip = hit.c;
+    tlDrag = { mode: hit.part === 'body' ? 'move' : 'trim' + hit.part, clip: hit.c, from: hit.k, x0: x, y0: y, t0: Tm(x), start: hit.c.start, in: hit.c.in, out: hit.c.out, moved: false, undo: TL.snapshot(), span: tlGeom().span };
+    return;
+  }
+  if (trackAtY(y) >= 0) selClip = null;
+  scrubbing = true; seek(Tm(x));
 });
-tl.addEventListener('pointermove', (e) => { if (scrubbing) seek(tlTime(e)); });
-tl.addEventListener('pointerup', () => { scrubbing = false; });
+tl.addEventListener('pointermove', (e) => {
+  const { x, y } = tlPoint(e), { Tm, span, W } = tlGeom();
+  if (scrubbing) { seek(Tm(x)); return; }
+  if (!tlDrag) {
+    const hit = hitClip(x, y);
+    tl.style.cursor = hit ? (hit.part === 'body' ? 'grab' : 'ew-resize') : x < LABEL_W && trackAtY(y) >= 0 ? 'pointer' : 'default';
+    return;
+  }
+  const d = tlDrag, c = d.clip, dt = Tm(x) - d.t0;
+  if (!d.moved && Math.abs(x - d.x0) < 4 && Math.abs(y - d.y0) < 4) return;
+  if (!d.moved) { d.moved = true; undoStack.push({ tl: d.undo }); }
+  tl.style.cursor = d.mode === 'move' ? 'grabbing' : 'ew-resize';
+  const m = c.media;
+  if (d.mode === 'trimL') {
+    let lo = 0;
+    if (d.from === 1) { const prev = TLS.tracks[1].filter((o) => o !== c && clipEnd(o) <= d.start + 1e-6).reduce((a, o) => Math.max(a, clipEnd(o)), 0); lo = Math.max(0, d.in - (d.start - prev)); }
+    let nin = Math.max(lo, Math.min(d.out - TL.MIN_CLIP, d.in + dt));
+    if (d.from === 1) { const st = snapT(d.start + (nin - d.in), c, true); nin = Math.max(lo, Math.min(d.out - TL.MIN_CLIP, d.in + st - d.start)); c.start = d.start + (nin - d.in); }
+    c.in = nin;
+  } else if (d.mode === 'trimR') {
+    let hi = m.dur;
+    if (d.from === 1) { const next = TLS.tracks[1].filter((o) => o !== c && o.start >= clipEnd({ start: d.start, in: d.in, out: d.out }) - 1e-6).reduce((a, o) => Math.min(a, o.start), Infinity); hi = Math.min(hi, d.in + (next - d.start)); }
+    let nout = Math.max(d.in + TL.MIN_CLIP, Math.min(hi, d.out + dt));
+    const endT = snapT(c.start + (nout - c.in), c, true); nout = Math.max(d.in + TL.MIN_CLIP, Math.min(hi, c.in + endT - c.start));
+    c.out = nout;
+  } else {
+    const k = trackAtY(y);
+    d.target = k >= 0 ? k : y < TRACK_Y[0] ? 0 : y > TRACK_Y[1] + TRACK_H ? 1 : d.from;
+    d.ghostT = Math.max(0, d.start + dt); d.ghostY = TRACK_Y[d.target] + TRACK_H / 2;
+    if (d.target === 0) {
+      d.index = TL.v1IndexAt(Tm(x), c);
+      let s = 0, i = 0; for (const o of TLS.tracks[0]) { if (o === c) continue; if (i === d.index) break; s += clipLen(o); i++; }
+      d.insertT = s;
+    } else d.place = TL.v2Place(snapT(d.ghostT, c), clipLen(c), c);
+  }
+  TL.restack();
+  if (d.mode !== 'move') { timelineChanged(); if (!playing) seek(d.mode === 'trimL' ? c.start : Math.min(clipEnd(c) - 0.001, duration())); }
+});
+tl.addEventListener('pointerup', () => {
+  scrubbing = false;
+  const d = tlDrag; tlDrag = null; if (!d) return;
+  if (!d.moved) { seek(tlGeom().Tm(d.x0)); return; }
+  if (d.mode === 'move') {
+    const c = d.clip;
+    if (d.target === 0) { TL.detach(c); TL.insertClip(c, 0, { index: d.index }); }
+    else if (d.place != null) { TL.detach(c); c.start = d.place; TLS.tracks[1].push(c); TL.restack(); }
+    else { undoStack.pop(); toast('No room there on Video 2'); }
+  }
+  timelineChanged(); seek(T);
+});
+tl.addEventListener('wheel', (e) => {
+  if (!duration()) return;
+  e.preventDefault();
+  const { x } = tlPoint(e), g0 = tlGeom();
+  if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) { view.t0 += ((e.shiftKey ? e.deltaY : e.deltaX) / g0.W) * g0.span; return; }
+  const at = g0.Tm(Math.max(LABEL_W, x));
+  view.zoom = Math.max(1, Math.min(400, view.zoom * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002))));
+  const g1 = tlGeom(); view.t0 = at - ((Math.max(LABEL_W, x) - LABEL_W) / g1.W) * g1.span;
+}, { passive: false });
+tl.addEventListener('dragover', (e) => { e.preventDefault(); });
+tl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const f = [...e.dataTransfer.files].filter(looksLikeVideo); if (!f.length) { toast('Drop a video file'); return; }
+  const { x, y } = tlPoint(e), k = trackAtY(y) === 1 ? 1 : 0, t = tlGeom().Tm(x);
+  importVideo(k, f, k === 0 ? { index: TL.v1IndexAt(t) } : { at: Math.max(0, t) });
+});
+function splitAtPlayhead() {
+  const c = selClip && T > selClip.start && T < clipEnd(selClip) ? selClip : clipAt(0, T) || clipAt(1, T);
+  if (!c) { toast('Move the playhead over a clip to split it'); return; }
+  pushTlUndo();
+  const b = TL.splitClip(c, T);
+  if (!b) { undoStack.pop(); toast('Too close to the end of the clip to split'); return; }
+  selClip = b; timelineChanged(); toast('Split');
+}
+function deleteSelectedClip() {
+  if (!selClip || TL.trackOf(selClip) < 0) { toast('Click a clip on the timeline first'); return; }
+  pushTlUndo(); TL.removeClip(selClip); selClip = null; timelineChanged(); seek(T); toast('Clip removed');
+}
+$('btnSplit').onclick = splitAtPlayhead;
+$('btnDelClip').onclick = deleteSelectedClip;
+$('btnZoomIn').onclick = () => { view.zoom = Math.min(400, view.zoom * 1.6); const g = tlGeom(); view.t0 = T - g.span / 2; };
+$('btnZoomOut').onclick = () => { view.zoom = Math.max(1, view.zoom / 1.6); const g = tlGeom(); view.t0 = T - g.span / 2; };
+$('btnZoomFit').onclick = () => { view.zoom = 1; view.t0 = 0; };
 
 // ================================================================ keyboard
 let presetKeys = null;
@@ -1024,6 +1261,8 @@ window.addEventListener('keydown', (e) => {
     case 'escape': { const n = selNode(); if (n && chain.engine(n.id)) act(n, { k: 'press', b: 'stop' }); pickKeyArmed = false; selectTool('pointer'); break; }
     case 'p': presetKeys = ''; toast('Type a two-digit preset number'); break;
     case 'home': home(); break;
+    case 's': splitAtPlayhead(); break;
+    case 'delete': case 'backspace': if (selClip) { e.preventDefault(); deleteSelectedClip(); } break;
     case 'arrowleft': seek(curTime() - (e.shiftKey ? 5 : 1)); break;
     case 'arrowright': seek(curTime() + (e.shiftKey ? 5 : 1)); break;
     case '[': { const n = paintNode(false); if (n) setNodeParam(n, 'brush', Math.max(0, chain.getParam(n, 'brush') - 1)); break; }
@@ -1040,8 +1279,8 @@ function unpackSnap(o) { const s = { ...o, engines: {} }; for (const [id, e] of 
 // deep copy of a chain snapshot that keeps typed arrays
 function clone_(s) { const o = clone({ ...s, engines: undefined }); o.engines = {}; for (const [id, e] of Object.entries(s.engines || {})) o.engines[id] = { ...e, store: e.store.slice(), stencil: e.stencil.slice(), cascade: e.cascade.slice(), P: { ...e.P }, g: { ...e.g }, procs: clone(e.procs), tunnelHist: e.tunnelHist.slice(), picked: [...e.picked], randColour: [...e.randColour], randPaint: [...e.randPaint], clip: null }; return o; }
 $('btnSave').onclick = () => {
-  const proj = { app: 'CVI-84', version: 4, fieldRate, settings: { ...settings }, chain: packSnap(exportBase()), automation: auto.toJSON() };
-  download(new Blob([JSON.stringify(proj)], { type: 'application/json' }), (src.v1 ? src.v1.name.replace(/\.[^.]+$/, '') : 'cvi-84') + '.cvi84.json');
+  const proj = { app: 'CVI-84', version: 4, fieldRate, settings: { ...settings }, chain: packSnap(exportBase()), automation: auto.toJSON(), timeline: TL.toJSON() };
+  download(new Blob([JSON.stringify(proj)], { type: 'application/json' }), projName() + '.cvi84.json');
   toast('Project saved');
 };
 $('btnOpen').onclick = () => $('fileProj').click();
@@ -1058,78 +1297,152 @@ $('fileProj').onchange = async (e) => {
     selected = chain.nodes[0]?.id || null;
     syncFieldToTime(curTime());
     stripDirty = inspDirty = uiDirty = true;
-    toast('Project opened' + (src.v1 ? '' : ': import the matching video'));
+    const relinked = TL.fromJSON(p.timeline);
+    if (relinked) timelineChanged();
+    toast('Project opened' + (relinked || !p.timeline ? '' : ': import the same video files to rebuild the timeline'));
   } catch (err) { toast(err.message); }
 };
 
 // ================================================================ export
 const dlg = $('exportDlg');
 let exporting = null;
+const projName = () => (TLS.tracks[0][0] || TLS.tracks[1][0] ? (TLS.tracks[0][0] || TLS.tracks[1][0]).media.name.replace(/\.[^.]+$/, '') : 'cvi-84');
 $('btnExport').onclick = () => {
-  if (!src.v1) { toast('Import a video first'); return; }
-  $('exportMsg').textContent = auto.isEmpty() ? 'No automation recorded, so the current settings are used for the whole clip.' : 'Renders the clip from the start with your recorded automation.';
+  if (!TL.hasClips()) { toast('Import a video first'); return; }
+  const n = TLS.tracks[0].length + TLS.tracks[1].length;
+  $('exportMsg').textContent = `Renders the whole timeline (${n} clip${n === 1 ? '' : 's'}, ${fmtShort(duration())}). ` + (auto.isEmpty() ? 'No automation recorded, so the current effect settings are used throughout.' : 'Plays back your recorded automation from the start.');
   $('exBar').style.width = '0'; $('exGo').disabled = false;
   dlg.showModal();
 };
 $('exCancel').onclick = async () => { if (exporting) { await exporting.cancel().catch(() => {}); exporting = null; } dlg.close(); };
-$('exGo').onclick = () => runExport().catch((e) => { $('exportMsg').innerHTML = `<span class="err">${esc(e.message || e)}</span>`; exporting = null; $('exGo').disabled = false; });
+$('exGo').onclick = () => runExport().catch((e) => { if (e && e.cancelled) return; console.error(e); $('exportMsg').innerHTML = `<span class="err">${esc(e.message || e)}</span>`; exporting = null; $('exGo').disabled = false; });
+// reads one clip's frames in order, handing back the frame showing at any time
+class FrameCursor {
+  constructor(sink, from) { this.it = sink.samples(from)[Symbol.asyncIterator](); this.cur = null; this.next = null; this.done = false; }
+  async pull() { const r = await this.it.next(); if (r.done) { this.done = true; this.next = null; } else this.next = r.value; }
+  async at(t) {
+    if (!this.next && !this.done) await this.pull();
+    while (this.next && this.next.timestamp <= t + 1e-4) { if (this.cur) this.cur.close(); this.cur = this.next; this.next = null; await this.pull(); }
+    return this.cur || this.next;
+  }
+  close() { if (this.cur) this.cur.close(); if (this.next) this.next.close(); this.it.return?.(); }
+}
+// mix every unmuted clip's sound into one buffer the length of the timeline
+async function mixTimelineAudio(MB, inputs, dur, progress) {
+  const rate = 48000, ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(dur * rate)), rate);
+  let any = false, done = 0;
+  const clips = TLS.tracks.flatMap((cl, k) => (TLS.mute[k] ? [] : cl));
+  for (const c of clips) {
+    const inp = inputs(c.media);
+    const at = await inp.input.getPrimaryAudioTrack();
+    if (at) {
+      const sink = new MB.AudioBufferSink(at);
+      for await (const { buffer, timestamp } of sink.buffers(c.in, c.out)) {
+        const off = Math.max(0, c.in - timestamp), len = Math.min(buffer.duration - off, c.out - (timestamp + off));
+        if (len <= 0) continue;
+        const node = ctx.createBufferSource(); node.buffer = buffer; node.connect(ctx.destination);
+        node.start(Math.max(0, c.start + (timestamp + off - c.in)), off, len);
+        any = true;
+      }
+    }
+    progress(++done / clips.length);
+  }
+  return any ? ctx.startRendering() : null;
+}
 async function runExport() {
   pause();
   $('exGo').disabled = true; $('exportMsg').textContent = 'Preparing…';
   const MB = await import('./vendor/mediabunny.min.mjs');
-  const input = new MB.Input({ source: new MB.BlobSource(src.v1.file), formats: MB.ALL_FORMATS });
-  const vt = await input.getPrimaryVideoTrack();
-  if (!vt) throw new Error('That file has no video track.');
-  const sw = vt.displayWidth, sh = vt.displayHeight;
+  const dur = duration();
+  const [sw, sh] = srcDims();
   const resSel = $('exRes').value;
   let hgt = resSel === 'src' ? sh : Math.min(+resSel, sh);
   const wid = Math.round((hgt * sw / sh) / 2) * 2; hgt -= hgt % 2;
   const q = { high: MB.QUALITY_HIGH, vhigh: MB.QUALITY_VERY_HIGH, med: MB.QUALITY_MEDIUM }[$('exQ').value];
   if (!(await MB.canEncodeVideo('avc', { width: wid, height: hgt }))) throw new Error('This browser cannot encode H.264 at that size. Try 720p, or use Chrome or Edge.');
+  const lead = TLS.tracks[0][0] || TLS.tracks[1][0];
+  const fps = lead.media.fps >= 10 && lead.media.fps <= 120 ? lead.media.fps : 30;
+  // one decoder per file
+  const cache = new Map();
+  const inputs = (m) => {
+    if (!cache.has(m)) cache.set(m, { input: new MB.Input({ source: new MB.BlobSource(m.file), formats: MB.ALL_FORMATS }) });
+    return cache.get(m);
+  };
+  const videoSink = async (m) => { const x = inputs(m); if (!x.sink) { const vt = await x.input.getPrimaryVideoTrack(); if (!vt) throw new Error(`${m.name} has no video track.`); x.sink = new MB.VideoSampleSink(vt); } return x.sink; };
+
+  let cancelled = false;
+  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+  exporting = { cancel: async () => { cancelled = true; } };
+  const canvas = new OffscreenCanvas(wid, hgt);
+  const vsrc = new MB.CanvasSource(canvas, { codec: 'avc', bitrate: q, keyFrameInterval: 2 });
+  output.addVideoTrack(vsrc, { frameRate: Math.round(fps * 1000) / 1000 });
+  let asrc = null, mixed = null, audioNote = '';
+  if ($('exAudio').value === '1') {
+    $('exportMsg').textContent = 'Mixing sound…';
+    mixed = await mixTimelineAudio(MB, inputs, dur, (p) => { $('exBar').style.width = `${(p * 10).toFixed(1)}%`; }).catch((e) => { console.warn(e); return null; });
+    const acodec = mixed ? ((await MB.canEncodeAudio('aac')) ? 'aac' : (await MB.canEncodeAudio('opus')) ? 'opus' : null) : null;
+    if (acodec) { asrc = new MB.AudioBufferSource({ codec: acodec, bitrate: MB.QUALITY_HIGH }); output.addAudioTrack(asrc); }
+    if (mixed && acodec !== 'aac') audioNote = acodec ? ' Sound is Opus: this browser can\'t write AAC, so use Chrome or Edge if Premiere won\'t read it.' : ' This browser can\'t encode sound, so the file is silent.';
+  }
+  await output.start();
+  if (asrc) { await asrc.add(mixed); asrc.close(); }
+
   const ch = Chain.from(clone_(exportBase()), chain.W, chain.H); ch.setField(0);
   const au = Automation.fromJSON(clone(auto.toJSON()));
-  const canvas = new OffscreenCanvas(wid, hgt);
   const R = new Renderer(canvas, 256); R.resize(wid, hgt);
-  let sink2 = null, v2canvas = null;
-  if (src.v2) {
-    const in2 = new MB.Input({ source: new MB.BlobSource(src.v2.file), formats: MB.ALL_FORMATS });
-    const t2 = await in2.getPrimaryVideoTrack();
-    if (t2) { sink2 = new MB.VideoSampleSink(t2); v2canvas = new OffscreenCanvas(t2.displayWidth, t2.displayHeight); }
-  }
-  const v2dur = src.v2 ? src.v2.el.duration || 1 : 1;
-  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
-  let t0 = null;
-  const conv = await MB.Conversion.init({
-    input, output,
-    video: {
-      forceTranscode: true, codec: 'avc', bitrate: q, processedWidth: wid, processedHeight: hgt,
-      process: async (sample) => {
-        if (t0 === null) t0 = sample.timestamp;
-        const t = sample.timestamp - t0;
-        const target = Math.floor(t * fieldRate + 1e-6);
-        const vf = sample.toVideoFrame(); R.uploadSource('analog', vf); vf.close();
-        let has2 = false;
-        if (sink2) { const s2 = await sink2.getSample(t % v2dur); if (s2) { s2.draw(v2canvas.getContext('2d'), 0, 0, v2canvas.width, v2canvas.height); s2.close(); R.uploadSource('v2', v2canvas); has2 = true; } }
-        applyLookAuto(target, ch, au);
-        const adv = (e, node, inputs) => { while (e.field <= target) { applyNodeAuto(node, e.field, au, ch); if (inputs) e.step(inputs, audioAt(e.field)); else e.field++; } };
-        const tex = renderChain(ch, R, { advance: adv, hasV2: has2, frame: target, blanking: settings.blanking, smooth: settings.smooth });
-        R.present(tex);
-        return canvas;
-      },
-    },
-    audio: $('exAudio').value === '1' ? {} : { discard: true },
-  });
-  if (!conv.isValid) throw new Error('Export could not start: ' + conv.discardedTracks.map((d) => `${d.track.type} track (${d.reason})`).join(', '));
-  exporting = conv;
-  conv.onProgress = (p) => { $('exBar').style.width = `${(p * 100).toFixed(1)}%`; $('exportMsg').textContent = `Rendering… ${(p * 100).toFixed(0)}%`; };
+  const fitC = [new OffscreenCanvas(wid, hgt), new OffscreenCanvas(wid, hgt)];
+  const cursors = [null, null];
+  const upload = async (k, t, slot) => {
+    const c = clipAt(k, t);
+    if (!c) { if (cursors[k]) { cursors[k].cur.close(); cursors[k] = null; } return false; }
+    if (!cursors[k] || cursors[k].clip !== c) {
+      if (cursors[k]) cursors[k].cur.close();
+      cursors[k] = { clip: c, cur: new FrameCursor(await videoSink(c.media), c.in + (t - c.start)) };
+    }
+    const smp = await cursors[k].cur.at(c.in + (t - c.start));
+    if (!smp) return k === 1 ? false : (R.uploadSource(slot, black), true);
+    const iw = smp.displayWidth, ih = smp.displayHeight;
+    if (Math.abs(iw / ih - wid / hgt) < 0.01) { const vf = smp.toVideoFrame(); R.uploadSource(slot, vf); vf.close(); }
+    else {
+      const g = fitC[k].getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, wid, hgt);
+      const sc = Math.min(wid / iw, hgt / ih), dw = iw * sc, dh = ih * sc;
+      smp.draw(g, (wid - dw) / 2, (hgt - dh) / 2, dw, dh);
+      R.uploadSource(slot, fitC[k]);
+    }
+    return true;
+  };
+  const total = Math.max(1, Math.round(dur * fps));
   const started = performance.now();
-  await conv.execute();
+  try {
+    for (let i = 0; i < total; i++) {
+      if (cancelled) throw Object.assign(new Error('Cancelled'), { cancelled: true });
+      const t = i / fps;
+      const target = Math.floor(t * fieldRate + 1e-6);
+      if (!(await upload(0, t, 'analog'))) R.uploadSource('analog', black);
+      const has2 = await upload(1, t, 'v2');
+      applyLookAuto(target, ch, au);
+      const adv = (e, node, inputs_) => { while (e.field <= target) { applyNodeAuto(node, e.field, au, ch); if (inputs_) e.step(inputs_, audioAt(e.field)); else e.field++; } };
+      const tex = renderChain(ch, R, { advance: adv, hasV2: has2, frame: target, blanking: settings.blanking, smooth: settings.smooth });
+      R.present(tex);
+      await vsrc.add(t, 1 / fps);
+      if (i % 5 === 0) { const p = 0.1 + 0.9 * (i / total); $('exBar').style.width = `${(p * 100).toFixed(1)}%`; $('exportMsg').textContent = `Rendering… ${(p * 100).toFixed(0)}%`; }
+    }
+    vsrc.close();
+    await output.finalize();
+  } catch (e) {
+    await output.cancel().catch(() => {});
+    if (e.cancelled) { exporting = null; $('exGo').disabled = false; $('exportMsg').textContent = 'Export cancelled.'; }
+    throw e;
+  } finally {
+    for (const c of cursors) if (c) c.cur.close();
+    for (const x of cache.values()) x.input.dispose?.();
+  }
   exporting = null;
   const blob = new Blob([output.target.buffer], { type: 'video/mp4' });
   const url = URL.createObjectURL(blob);
-  const name = src.v1.name.replace(/\.[^.]+$/, '') + '-cvi84.mp4';
+  const name = projName() + '-cvi84.mp4';
   $('exBar').style.width = '100%';
-  $('exportMsg').innerHTML = `Done in ${((performance.now() - started) / 1000).toFixed(0)} s, ${(blob.size / 1048576).toFixed(1)} MB. <a href="${url}" download="${esc(name)}">Save ${esc(name)}</a>`;
+  $('exportMsg').innerHTML = `Done in ${((performance.now() - started) / 1000).toFixed(0)} s, ${(blob.size / 1048576).toFixed(1)} MB.${esc(audioNote)} <a href="${url}" download="${esc(name)}">Save ${esc(name)}</a>`;
   download(blob, name);
   $('exGo').disabled = false;
 }
@@ -1143,4 +1456,4 @@ buildPresets();
 selected = null;
 fitPreview();
 requestAnimationFrame(tick);
-window.__cvi = { get chain() { return chain; }, get auto() { return auto; }, addBlock, select, applyPreset, setNodeParam, play, pause, seek, importVideo, loadVideo, runExport, selectTool, removeBlock };
+window.__cvi = { TL, get T() { return T; }, splitAtPlayhead, deleteSelectedClip, undo, get selClip() { return selClip; }, set selClip(c) { selClip = c; }, get chain() { return chain; }, get auto() { return auto; }, addBlock, select, applyPreset, setNodeParam, play, pause, seek, importVideo, loadVideo, runExport, selectTool, removeBlock };
