@@ -164,10 +164,36 @@ function addBlock(type, opts = {}) {
   const i = selected ? chain.nodes.findIndex((n) => n.id === selected) + 1 : chain.nodes.length;
   chain.insert(node, i <= 0 ? chain.nodes.length : i);
   const e = chain.engine(node.id); if (e) e.field = curField();
+  if ((MODULES[type].keyed || MODULES[type].keyer) && !opts.state) detectKey(node, false);
   selected = node.id; openCards.add(node.id);
   stripDirty = inspDirty = uiDirty = true;
   toast('Added ' + node.name);
   return node;
+}
+// find the backdrop colour from the edges of the frame, like clicking it with the eyedropper
+function detectKey(node, announce) {
+  const e = chain.engine(node.id); if (!e || !src.v1 || !renderer.targets.has('src')) { if (announce) toast('Import a video first'); return; }
+  const W = chain.W, H = chain.H, d = renderer.grab(renderer.target('src').t, W, H);
+  const bins = new Array(36).fill(0), sums = new Array(36).fill(0); let lumSum = 0, n = 0, satSum = 0;
+  const take = (x, y) => {
+    const i = (y * W + x) * 4, r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), dd = mx - mn;
+    let hh = 0; if (dd) { hh = mx === r ? ((g - b) / dd) % 6 : mx === g ? (b - r) / dd + 2 : (r - g) / dd + 4; hh = (hh * 60 + 360) % 360; }
+    const s = mx ? dd / mx : 0; satSum += s; lumSum += 0.299 * r + 0.587 * g + 0.114 * b; n++;
+    if (s > 0.25 && mx > 0.15) { const k = Math.floor(hh / 10) % 36; bins[k]++; sums[k] += hh; }
+  };
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (x < W * 0.12 || x > W * 0.88 || y < H * 0.1) take(x, y);
+  let best = 0; for (let k = 1; k < 36; k++) if (bins[k] > bins[best]) best = k;
+  if (bins[best] > n * 0.35) {
+    setNodeParam(node, 'useStencil', 1); setNodeParam(node, 'stencilSource', 2); setNodeParam(node, 'keyMode', 0); setNodeParam(node, 'keyInvert', 0);
+    setNodeParam(node, 'keyHue', Math.round(sums[best] / bins[best]));
+    if (announce) toast('Backdrop detected');
+  } else {
+    const L = lumSum / n;
+    setNodeParam(node, 'useStencil', 1); setNodeParam(node, 'stencilSource', 2); setNodeParam(node, 'keyMode', 1);
+    setNodeParam(node, 'keyLuma', Math.max(10, Math.min(245, Math.round(L * 255 + (L > 0.5 ? -50 : 50))))); setNodeParam(node, 'keyInvert', L > 0.5 ? 1 : 0);
+    if (announce) toast('No coloured backdrop found: keying on brightness');
+  }
+  e.store.fill(0); e.cascade.fill(0);
 }
 function removeBlock(id) {
   const i = chain.nodes.findIndex((n) => n.id === id);
@@ -745,28 +771,20 @@ const SECTIONS = {
   },
   shatterRate(b) { toggle(b, { p: 'shatter', label: 'Flicker' }); slider(b, { p: 'rate2', label: 'Rate', fmt: pct, reset: 200 }); },
   key(b) {
-    const node = CUR, m = MODULES[node.type];
-    if (m.keyed) {
-      const above = () => { const i = chain.nodes.indexOf(node); return chain.nodes.slice(0, i).find((n) => MODULES[n.type].keyer && !n.bypass); };
-      const msg = h('<p class="desc"></p>'); b.appendChild(msg);
-      const wrap = h('<div style="display:grid;gap:10px"></div>'); b.appendChild(wrap);
-      binds.push(() => { const k = above(); msg.hidden = !k; wrap.hidden = !!k; if (k) msg.innerHTML = `Using the key from <b>${esc(k.name)}</b> above. Adjust the key there.`; });
-      b = wrap;
-      note(b, 'No key above this effect, so it keys on its own. Tip: add Chroma key above it to key once and share it.');
-    }
     seg(b, { p: 'stencilSource', label: 'Key from', opts: [[2, 'Picture'], [1, 'Video 2'], [0, 'Painted']] });
     seg(b, { p: 'keyMode', label: 'Key on', opts: [[0, 'Colour'], [1, 'Brightness']], show: keyed });
     const kc = h(`<label class="field" style="grid-template-columns:88px minmax(0,1fr) auto"><span>Backdrop</span><input type="color"><button type="button" class="gbtn">Pick</button></label>`);
     const kci = kc.querySelector('input');
     kci.oninput = () => sp('keyHue', Math.round(hexHsv(kci.value)[0] * 360));
     kc.querySelector('button').onclick = (e) => { e.preventDefault(); pickKeyArmed = true; uiDirty = true; toast('Click the background in the picture'); };
+    buttons(b, [{ label: 'Detect backdrop automatically', run: () => detectKey(CUR, true) }], 1);
     binds.push(() => { kc.hidden = !keyed(); kci.hidden = gp('keyMode') !== 0; if (document.activeElement !== kci) kci.value = hsvHex(gp('keyHue') / 360, 0.85, 0.85); });
     b.appendChild(kc);
     slider(b, { p: 'keyTol', label: 'Tolerance', fmt: pct, reset: 70, show: () => keyed() && gp('keyMode') === 0 });
     slider(b, { p: 'keySat', label: 'Min saturation', fmt: pct, reset: 60, show: () => keyed() && gp('keyMode') === 0 });
     slider(b, { p: 'keyLuma', label: 'Threshold', fmt: pct, reset: 128, show: () => (keyed() && gp('keyMode') === 1) || gp('stencilSource') === 1 });
     toggle(b, { p: 'keyInvert', label: 'Swap subject / background', show: () => gp('stencilSource') !== 0 });
-    if (MODULES[CUR.type].keyer || MODULES[CUR.type].sections[0] === 'all') {
+    {
       slider(b, { p: 'keyEdge', label: 'Edge detail', fmt: (v) => (v === 0 ? 'CVI' : Math.round(v / 2.55) + '%'), reset: 0, show: () => gp('stencilSource') !== 0 });
       note(b, 'Edge detail: 0 is the original blocky CVI edge. Raise it and the edge gets gradually finer, up to full resolution at 100%.', () => gp('stencilSource') !== 0);
     }
