@@ -242,17 +242,19 @@ const FONT = (() => {
 
 // ---------- the engine ----------
 export class CVI {
-  constructor(N = 256) {
-    this.N = N;
+  // W x H field store. The 1984 hardware was 256 x 256 stretched over a 4:3 frame; here the grid can follow
+  // the video's aspect ratio (square pixels) and be made finer.
+  constructor(W = 256, H = W) {
+    this.W = W; this.H = H; this.N = W; const NN = W * H;
     this.P = defaultParams();
-    this.store = new Uint8Array(N * N * 3); // 4-bit per channel (0..15)
-    this.stencil = new Uint8Array(N * N); // 1-bit internal stencil, store coordinates
-    this.view = new Uint8Array(N * N * 4); // output for compositor
-    this.digital = new Uint8Array(N * N * 3); // live digital plane (0..15), screen coords
-    this.mask = new Uint8Array(N * N); // effective stencil this field, screen coords
-    this.cascade = new Uint8Array(N * N * 3); // previous composite (cascade = feedback through a 2nd pass)
-    this.mapX = new Int32Array(N); this.mapY = new Int32Array(N);
-    this.ownX = new Uint8Array(N); this.ownY = new Uint8Array(N); // mirror: is this screen pixel on the source side
+    this.store = new Uint8Array(NN * 3); // 4-bit per channel (0..15)
+    this.stencil = new Uint8Array(NN); // 1-bit internal stencil, store coordinates
+    this.view = new Uint8Array(NN * 4); // output for compositor
+    this.digital = new Uint8Array(NN * 3); // live digital plane (0..15), screen coords
+    this.mask = new Uint8Array(NN); // effective stencil this field, screen coords
+    this.cascade = new Uint8Array(NN * 3); // previous composite (cascade = feedback through a 2nd pass)
+    this.mapX = new Int32Array(W); this.mapY = new Int32Array(H);
+    this.ownX = new Uint8Array(W); this.ownY = new Uint8Array(H); // mirror: is this screen pixel on the source side
     this.lut = new Uint16Array(4096);
     this.lutKey = '';
     this.overlay = null; // rubber-band preview for the UI
@@ -280,7 +282,7 @@ export class CVI {
   // ---- snapshots (store, stencil and all machine state; params optional) ----
   snapshot(withParams = true) {
     return {
-      N: this.N, store: this.store.slice(), stencil: this.stencil.slice(), cascade: this.cascade.slice(),
+      W: this.W, H: this.H, store: this.store.slice(), stencil: this.stencil.slice(), cascade: this.cascade.slice(),
       rng: this.rng.s, field: this.field, g: { ...this.g }, slideX: this.slideX, slideY: this.slideY,
       procs: JSON.parse(JSON.stringify(this.procs)), picked: [...this.picked], randColour: [...this.randColour], randPaint: [...this.randPaint],
       tunnelHist: this.tunnelHist.slice(), clip: this.clip ? { ...this.clip, data: this.clip.data.slice() } : null,
@@ -288,7 +290,7 @@ export class CVI {
     };
   }
   restore(s) {
-    this.store.set(s.store); this.stencil.set(s.stencil); this.cascade.set(s.cascade);
+    if (s.store.length === this.store.length) { this.store.set(s.store); this.stencil.set(s.stencil); this.cascade.set(s.cascade); }
     this.rng.s = s.rng; this.field = s.field; this.g = { ...s.g }; this.slideX = s.slideX; this.slideY = s.slideY;
     this.procs = JSON.parse(JSON.stringify(s.procs)); this.picked = [...s.picked];
     this.randColour = [...s.randColour]; this.randPaint = [...s.randPaint]; this.tunnelHist = s.tunnelHist.slice();
@@ -313,7 +315,7 @@ export class CVI {
   }
   paintColour(x = 0, y = 0) {
     const P = this.P;
-    if (P.paintType === 5) return hsv2rgb(x / this.N, 1 - y / this.N * 0.8, 1);
+    if (P.paintType === 5) return hsv2rgb(x / this.W, 1 - y / this.H * 0.8, 1);
     if (P.colourCtl === 1) { const a = this.audio, s = 1.6; return [clamp01(a.b * s), clamp01(a.m * s), clamp01(a.t * s)]; }
     if (P.colourCtl === 2 || P.colourCtl === 3) return this.randPaint;
     return this.sliderColour();
@@ -368,26 +370,25 @@ export class CVI {
 
   // ---- readout transform (zoom, stretch, pan, slide, mirror) — store coords for each screen pixel ----
   buildMaps() {
-    const N = this.N, P = this.P, g = this.g, c = N / 2;
+    const W = this.W, H = this.H, P = this.P, g = this.g, cx = W / 2, cy = H / 2;
     const z = 1 + Math.pow(g.zoom / 255, 1.6) * 15;
     const s = bip(g.stretch);
     const zx = s > 0 ? z * (1 + s * 7) : z, zy = s < 0 ? z * (1 - s * 7) : z;
     this.zx = zx; this.zy = zy;
-    let panX = 0, panY = 0, axX = c, axY = c;
+    let panX = 0, panY = 0, axX = cx, axY = cy;
     if (P.slide) { panX = this.slideX; panY = this.slideY; }
-    if (P.vmirror) axX = c + bip(g.hpan) * c; else if (!P.slide) panX = bip(g.hpan) * c;
-    if (P.hmirror) axY = c + bip(g.vpan) * c; else if (!P.slide) panY = bip(g.vpan) * c;
+    if (P.vmirror) axX = cx + bip(g.hpan) * cx; else if (!P.slide) panX = bip(g.hpan) * cx;
+    if (P.hmirror) axY = cy + bip(g.vpan) * cy; else if (!P.slide) panY = bip(g.vpan) * cy;
     this.panX = panX; this.panY = panY;
-    const wrap = (v) => ((v % N) + N) % N;
-    for (let x = 0; x < N; x++) {
+    for (let x = 0; x < W; x++) {
       let xs = x; this.ownX[x] = 1;
       if (P.vmirror && x > axX) { xs = 2 * axX - x; this.ownX[x] = 0; }
-      this.mapX[x] = wrap(Math.floor((xs - c) / zx + c - panX));
+      this.mapX[x] = ((Math.floor((xs - cx) / zx + cx - panX) % W) + W) % W;
     }
-    for (let y = 0; y < N; y++) {
+    for (let y = 0; y < H; y++) {
       let ys = y; this.ownY[y] = 1;
       if (P.hmirror && y > axY) { ys = 2 * axY - y; this.ownY[y] = 0; }
-      this.mapY[y] = wrap(Math.floor((ys - c) / zy + c - panY));
+      this.mapY[y] = ((Math.floor((ys - cy) / zy + cy - panY) % H) + H) % H;
     }
   }
 
@@ -407,7 +408,7 @@ export class CVI {
   // ---- one field ----
   // dig, ana: RGBA8 NxN frames for the digital and analog paths (already routed V1/V2); key: frame used for keying
   step(inputs, audio) {
-    const N = this.N, NN = N * N, P = this.P;
+    const W = this.W, H = this.H, NN = W * H, P = this.P;
     const dig = P.digSrc ? inputs.v2 || inputs.v1 : inputs.v1;
     const ana = P.anaSrc ? inputs.v2 || inputs.v1 : inputs.v1;
     const keySrc = P.keySrc ? inputs.v2 || inputs.v1 : inputs.v1;
@@ -421,8 +422,8 @@ export class CVI {
     }
     if (P.slide) {
       const sx = bip(P.hpan), sy = bip(P.vpan);
-      this.slideX = (this.slideX + sx * sx * sx * N / 2 + N * 64) % N;
-      this.slideY = (this.slideY + sy * sy * sy * N / 2 + N * 64) % N;
+      this.slideX = (this.slideX + sx * sx * sx * W / 2 + W * 64) % W;
+      this.slideY = (this.slideY + sy * sy * sy * H / 2 + H * 64) % H;
     }
 
     // 2. random / music colour programs (RATE 1)
@@ -440,13 +441,13 @@ export class CVI {
     if (colourizeOn) { if (!(P.colourizeCtl === 1 && !P.colourize && this.fixLutKey)) this.buildLut(); }
     const useLut = colourizeOn || (P.colourizeCtl === 1 && this.fixLutKey);
     const bx = Math.max(1, Math.round(this.zx)), by = Math.max(1, Math.round(this.zy));
-    const c = N / 2, panX = Math.round(this.panX), panY = Math.round(this.panY);
+    const cx = W / 2, cy = H / 2, panX = Math.round(this.panX), panY = Math.round(this.panY);
     const dg = this.digital;
-    for (let y = 0; y < N; y++) {
-      let ly = Math.floor((y - c) / by) * by + c - panY; ly = ((ly % N) + N) % N;
-      for (let x = 0; x < N; x++) {
-        let lx = Math.floor((x - c) / bx) * bx + c - panX; lx = ((lx % N) + N) % N;
-        const si = (ly * N + lx) * 4, di = (y * N + x) * 3;
+    for (let y = 0; y < H; y++) {
+      let ly = Math.floor((y - cy) / by) * by + cy - panY; ly = ((ly % H) + H) % H;
+      for (let x = 0; x < W; x++) {
+        let lx = Math.floor((x - cx) / bx) * bx + cx - panX; lx = ((lx % W) + W) % W;
+        const si = (ly * W + lx) * 4, di = (y * W + x) * 3;
         let r = dig[si] >> 4, g = dig[si + 1] >> 4, b = dig[si + 2] >> 4;
         if (useLut) { const e = this.lut[(r << 8) | (g << 4) | b]; r = e >> 8; g = (e >> 4) & 15; b = e & 15; }
         dg[di] = r; dg[di + 1] = g; dg[di + 2] = b;
@@ -459,10 +460,10 @@ export class CVI {
     let invert = P.invertStencil;
     if (P.shatter) { const p2 = this.period(P.rate2); if (this.field % p2 === 0) this.shatterPhase ^= 1; invert ^= this.shatterPhase; }
     const kh = P.keyHue / 360, kt = P.keyTol / 255 * 0.5, ksat = P.keySat / 255, kl = P.keyLuma / 255;
-    for (let y = 0; y < N; y++) {
-      const row = my[y] * N;
-      for (let x = 0; x < N; x++) {
-        const i = y * N + x;
+    for (let y = 0; y < H; y++) {
+      const row = my[y] * W;
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
         let m = 0;
         if (P.useStencil) {
           const internal = st[row + mx[x]];
@@ -509,17 +510,17 @@ export class CVI {
     const kc = this.colourizeColour();
     const kr = Math.round(kc[0] * 15), kg = Math.round(kc[1] * 15), kb = Math.round(kc[2] * 15);
     const store = this.store, view = this.view, cas = this.cascade;
-    const wipeEdgeX = P.hwipe ? Math.round((this.g.hpan / 255) * N) : -1;
-    const wipeEdgeY = P.vwipe ? Math.round((this.g.vpan / 255) * N) : -1;
+    const wipeEdgeX = P.hwipe ? Math.round((this.g.hpan / 255) * W) : -1;
+    const wipeEdgeY = P.vwipe ? Math.round((this.g.vpan / 255) * H) : -1;
     const ownX = this.ownX, ownY = this.ownY;
     // update pass first (writes the store), then readout — this is what makes continuous freeze + zoom/slide/mirror feed back
     if (grab && (offU || onU)) {
-      for (let y = 0; y < N; y++) {
+      for (let y = 0; y < H; y++) {
         if (!ownY[y]) continue;
-        const row = my[y] * N;
-        for (let x = 0; x < N; x++) {
+        const row = my[y] * W;
+        for (let x = 0; x < W; x++) {
           if (!ownX[x]) continue;
-          const i = y * N + x, u = mk[i] ? onU : offU;
+          const i = y * W + x, u = mk[i] ? onU : offU;
           if (!u) continue;
           const si = (row + mx[x]) * 3;
           if (u === U_IMG) { store[si] = dg[i * 3]; store[si + 1] = dg[i * 3 + 1]; store[si + 2] = dg[i * 3 + 2]; }
@@ -530,10 +531,10 @@ export class CVI {
     // readout
     const crawlPhase = this.field / (this.period(P.rate1) * 3);
     const tmp = [0, 0, 0];
-    for (let y = 0; y < N; y++) {
-      const row = my[y] * N;
-      for (let x = 0; x < N; x++) {
-        const i = y * N + x, o = i * 4;
+    for (let y = 0; y < H; y++) {
+      const row = my[y] * W;
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x, o = i * 4;
         let plane = mk[i] ? onD : offD;
         if (wipeEdgeX >= 0 && x >= wipeEdgeX) plane = D;
         if (wipeEdgeY >= 0 && y >= wipeEdgeY) plane = D;
@@ -575,7 +576,7 @@ export class CVI {
   paintPixel(si, k, w) {
     const P = this.P, s = this.store, i3 = si * 3;
     if (this.protectedAt(si)) return;
-    if (P.useTexture && !texel(P.texture, si % this.N, (si / this.N) | 0)) return;
+    if (P.useTexture && !texel(P.texture, si % this.W, (si / this.W) | 0)) return;
     if (P.colourType === 0) {
       if (w >= 0.999) { s[i3] = Math.round(k[0] * 15); s[i3 + 1] = Math.round(k[1] * 15); s[i3 + 2] = Math.round(k[2] * 15); return; }
       s[i3] = Math.round((s[i3] / 15 * (1 - w) + k[0] * w) * 15); s[i3 + 1] = Math.round((s[i3 + 1] / 15 * (1 - w) + k[1] * w) * 15); s[i3 + 2] = Math.round((s[i3 + 2] / 15 * (1 - w) + k[2] * w) * 15);
@@ -589,11 +590,11 @@ export class CVI {
 
   // stamp the brush centred on screen point (x, y) — all symmetry copies, through the readout transform
   stamp(x, y) {
-    const P = this.P, N = this.N;
+    const P = this.P, W = this.W, H = this.H;
     const pts = this.symmetry(x, y);
     const brush = BRUSHES[P.brush] || BRUSHES[0];
     for (const [px, py] of pts) {
-      if (px < 0 || py < 0 || px >= N || py >= N) continue;
+      if (px < 0 || py < 0 || px >= W || py >= H) continue;
       const cx = this.mapX[px | 0], cy = this.mapY[py | 0];
       const dots = brush.spray ? Array.from({ length: brush.n }, () => { const a = this.rand() * 6.283, r = Math.sqrt(this.rand()) * brush.spray; return [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r), 1]; }) : brush;
       let ext = 1; for (const [dx] of dots) ext = Math.max(ext, Math.abs(dx));
@@ -604,23 +605,23 @@ export class CVI {
         if (P.paintType === 2) w *= this.rand();
         if (P.paintType === 3) w *= clamp01((dx + ext) / (2 * ext));
         if (P.paintType === 4) w *= clamp01((dy + ext) / (2 * ext));
-        const sx = ((cx + dx) % N + N) % N, sy = ((cy + dy) % N + N) % N, si = sy * N + sx;
+        const sx = ((cx + dx) % W + W) % W, sy = ((cy + dy) % H + H) % H, si = sy * W + sx;
         if (P.drawColour || !P.drawStencil) this.paintPixel(si, this.paintColour(sx, sy), w);
         if (P.drawStencil && w > 0.3) this.stencilPixel(si);
       }
     }
   }
   symmetry(x, y) {
-    const N = this.N, c = N / 2, dx = x - c, dy = y - c;
+    const cx = this.W / 2, cy = this.H / 2, dx = x - cx, dy = y - cy;
     switch (this.P.symmetry) {
-      case 1: return [[x, y], [c - dx, y]];
-      case 2: return [[x, y], [x, c - dy]];
-      case 3: return [[c - dx, y]];
-      case 4: return [[x, y], [c - dx, y], [x, c - dy], [c - dx, c - dy]];
-      case 5: return [[x, y], [c - dx, c - dy], [c + dy, c + dx], [c - dy, c - dx]];
-      case 6: { const o = []; for (const [a, b] of [[dx, dy], [dy, dx]]) for (const sx of [1, -1]) for (const sy of [1, -1]) o.push([c + a * sx, c + b * sy]); return o; }
-      case 7: return [[x, y], [c - dy, c + dx], [c - dx, c - dy], [c + dy, c - dx]];
-      case 8: return [[x, y], [c - dx, c - dy]];
+      case 1: return [[x, y], [cx - dx, y]];
+      case 2: return [[x, y], [x, cy - dy]];
+      case 3: return [[cx - dx, y]];
+      case 4: return [[x, y], [cx - dx, y], [x, cy - dy], [cx - dx, cy - dy]];
+      case 5: return [[x, y], [cx - dx, cy - dy], [cx + dy, cy + dx], [cx - dy, cy - dx]];
+      case 6: { const o = []; for (const [a, b] of [[dx, dy], [dy, dx]]) for (const sx of [1, -1]) for (const sy of [1, -1]) o.push([cx + a * sx, cy + b * sy]); return o; }
+      case 7: return [[x, y], [cx - dy, cy + dx], [cx - dx, cy - dy], [cx + dy, cy - dx]];
+      case 8: return [[x, y], [cx - dx, cy - dy]];
       default: return [[x, y]];
     }
   }
@@ -630,15 +631,15 @@ export class CVI {
   }
   // filled shapes go straight into the store via screen->store mapping (symmetry applies)
   fillShape(test, x0, y0, x1, y1) {
-    const N = this.N, P = this.P;
-    const ax = Math.max(0, Math.floor(Math.min(x0, x1))), bx = Math.min(N - 1, Math.ceil(Math.max(x0, x1)));
-    const ay = Math.max(0, Math.floor(Math.min(y0, y1))), by = Math.min(N - 1, Math.ceil(Math.max(y0, y1)));
-    const done = new Uint8Array(N * N);
+    const W = this.W, H = this.H, P = this.P;
+    const ax = Math.max(0, Math.floor(Math.min(x0, x1))), bx = Math.min(W - 1, Math.ceil(Math.max(x0, x1)));
+    const ay = Math.max(0, Math.floor(Math.min(y0, y1))), by = Math.min(H - 1, Math.ceil(Math.max(y0, y1)));
+    const done = new Uint8Array(W * H);
     for (let y = ay; y <= by; y++) for (let x = ax; x <= bx; x++) {
       if (!test(x, y)) continue;
       for (const [px, py] of this.symmetry(x, y)) {
-        if (px < 0 || py < 0 || px >= N || py >= N) continue;
-        const sx = this.mapX[px | 0], sy = this.mapY[py | 0], si = sy * N + sx;
+        if (px < 0 || py < 0 || px >= W || py >= H) continue;
+        const sx = this.mapX[px | 0], sy = this.mapY[py | 0], si = sy * W + sx;
         if (done[si]) continue; done[si] = 1;
         let w = 1;
         if (P.paintType === 1 && this.rand() > 0.3) continue;
@@ -651,30 +652,30 @@ export class CVI {
     }
   }
   floodFill(x, y) {
-    const N = this.N, sx0 = this.mapX[x | 0], sy0 = this.mapY[y | 0], seed = sy0 * N + sx0;
-    const sv = this.stencil[seed], seen = new Uint8Array(N * N), stack = [seed];
+    const W = this.W, H = this.H, sx0 = this.mapX[x | 0], sy0 = this.mapY[y | 0], seed = sy0 * W + sx0;
+    const sv = this.stencil[seed], seen = new Uint8Array(W * H), stack = [seed];
     seen[seed] = 1;
     const P = this.P;
     while (stack.length) {
       const i = stack.pop();
-      if (P.drawColour || !P.drawStencil) this.paintPixel(i, this.paintColour(i % N, (i / N) | 0), P.paintType === 2 ? this.rand() : 1);
-      const px = i % N, py = (i / N) | 0;
+      if (P.drawColour || !P.drawStencil) this.paintPixel(i, this.paintColour(i % W, (i / W) | 0), P.paintType === 2 ? this.rand() : 1);
+      const px = i % W, py = (i / W) | 0;
       for (const [nx, ny] of [[px + 1, py], [px - 1, py], [px, py + 1], [px, py - 1]]) {
-        if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
-        const j = ny * N + nx;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const j = ny * W + nx;
         if (!seen[j] && this.stencil[j] === sv) { seen[j] = 1; stack.push(j); }
       }
     }
   }
   title(x, y) {
-    const P = this.P, N = this.N;
+    const P = this.P, W = this.W, H = this.H;
     const sc = [1, 2, 3, 4, 6][Math.max(0, Math.min(4, P.titleSize - 1))];
     const text = String(P.title || '').toUpperCase().split('\n').slice(0, 7);
     const k = this.paintColour(x, y), comp = [1 - k[0], 1 - k[1], 1 - k[2]];
     const fmt = P.titleFormat;
     const put = (px, py, col) => {
-      if (px < 0 || py < 0 || px >= N || py >= N) return;
-      const si = this.mapY[py] * N + this.mapX[px];
+      if (px < 0 || py < 0 || px >= W || py >= H) return;
+      const si = this.mapY[py] * W + this.mapX[px];
       if (P.drawColour || !P.drawStencil) {
         if (this.protectedAt(si)) return;
         this.store[si * 3] = Math.round(col[0] * 15); this.store[si * 3 + 1] = Math.round(col[1] * 15); this.store[si * 3 + 2] = Math.round(col[2] * 15);
@@ -694,11 +695,11 @@ export class CVI {
 
   // pad events: x, y in 0..1 screen space. ph: down | move | up. draw: whether DRAW is held
   padEvent(a) {
-    const P = this.P, N = this.N;
-    const x = Math.max(0, Math.min(N - 1, a.x * N)), y = Math.max(0, Math.min(N - 1, a.y * N));
+    const P = this.P, W = this.W, H = this.H;
+    const x = Math.max(0, Math.min(W - 1, a.x * W)), y = Math.max(0, Math.min(H - 1, a.y * H));
     if (a.ph === 'down' && this.pickArmed) {
       this.pickArmed = false;
-      const i = ((y | 0) * N + (x | 0)) * 4;
+      const i = ((y | 0) * W + (x | 0)) * 4;
       const v = this.view;
       const hs = rgb2hsv(v[i] / 255, v[i + 1] / 255, v[i + 2] / 255);
       P.hue = Math.round(hs[0] * 255); P.sat = Math.round(hs[1] * 255); P.val = Math.round(hs[2] * 255);
@@ -709,8 +710,8 @@ export class CVI {
     if (P.panpen && !a.draw) {
       if (a.ph === 'down') this.pad = { x, y };
       else if (a.ph === 'move' && this.pad) {
-        P.hpan = Math.max(0, Math.min(255, P.hpan + (x - this.pad.x) * 255 / N));
-        P.vpan = Math.max(0, Math.min(255, P.vpan + (y - this.pad.y) * 255 / N));
+        P.hpan = Math.max(0, Math.min(255, P.hpan + (x - this.pad.x) * 255 / W));
+        P.vpan = Math.max(0, Math.min(255, P.vpan + (y - this.pad.y) * 255 / H));
         this.pad = { x, y };
       } else this.pad = null;
       return;
@@ -733,7 +734,7 @@ export class CVI {
       else if (m === 1) { pd.acc += Math.hypot(x - pd.x, y - pd.y); if (pd.acc > 6) { pd.acc = 0; this.stamp(x, y); } }
       else if (m === 6) this.line(pd.x0, pd.y0, x, y, 2);
       pd.x = x; pd.y = y;
-      this.overlay = m >= 2 && m <= 5 || m === 7 ? { m, x0: pd.x0 / N, y0: pd.y0 / N, x1: x / N, y1: y / N } : null;
+      this.overlay = m >= 2 && m <= 5 || m === 7 ? { m, x0: pd.x0 / W, y0: pd.y0 / H, x1: x / W, y1: y / H } : null;
       return;
     }
     // up
@@ -747,33 +748,33 @@ export class CVI {
     this.pad = null;
   }
   cut(x0, y0, x1, y1) {
-    const N = this.N, ax = Math.floor(Math.min(x0, x1)), ay = Math.floor(Math.min(y0, y1));
+    const W = this.W, H = this.H, ax = Math.floor(Math.min(x0, x1)), ay = Math.floor(Math.min(y0, y1));
     const w = Math.max(1, Math.abs(Math.floor(x1) - Math.floor(x0))), h = Math.max(1, Math.abs(Math.floor(y1) - Math.floor(y0)));
     const data = new Uint8Array(w * h * 3);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const si = (this.mapY[Math.min(N - 1, ay + y)] * N + this.mapX[Math.min(N - 1, ax + x)]) * 3;
+      const si = (this.mapY[Math.min(H - 1, ay + y)] * W + this.mapX[Math.min(W - 1, ax + x)]) * 3;
       data.set(this.store.subarray(si, si + 3), (y * w + x) * 3);
     }
     this.clip = { w, h, data, ready: true };
   }
   paste(x, y) {
-    const N = this.N, c = this.clip;
+    const W = this.W, H = this.H, c = this.clip;
     for (let j = 0; j < c.h; j++) for (let i = 0; i < c.w; i++) {
       const px = Math.floor(x) + i, py = Math.floor(y) + j;
-      if (px >= N || py >= N) continue;
-      const si = this.mapY[py] * N + this.mapX[px];
+      if (px >= W || py >= H) continue;
+      const si = this.mapY[py] * W + this.mapX[px];
       if (this.protectedAt(si)) continue;
       this.store.set(c.data.subarray((j * c.w + i) * 3, (j * c.w + i) * 3 + 3), si * 3);
     }
   }
 
   // ---- wipes ----
-  fillStore(k) { const N = this.N; for (let i = 0; i < N * N; i++) if (!this.protectedAt(i)) { this.store[i * 3] = Math.round(k[0] * 15); this.store[i * 3 + 1] = Math.round(k[1] * 15); this.store[i * 3 + 2] = Math.round(k[2] * 15); } }
+  fillStore(k) { const NN = this.W * this.H; for (let i = 0; i < NN; i++) if (!this.protectedAt(i)) { this.store[i * 3] = Math.round(k[0] * 15); this.store[i * 3 + 1] = Math.round(k[1] * 15); this.store[i * 3 + 2] = Math.round(k[2] * 15); } }
   startColourWipe(t) {
-    const N = this.N;
+    const W = this.W, NN = W * this.H;
     switch (t) {
       case 0: this.fillStore([1, 1, 1]); break;
-      case 1: for (let i = 0; i < N * N; i++) this.paintPixel(i, this.paintColour(i % N, (i / N) | 0), 1); break;
+      case 1: for (let i = 0; i < NN; i++) this.paintPixel(i, this.paintColour(i % W, (i / W) | 0), 1); break;
       case 2: this.procs.push({ t: 'cTex', i: 0, n: 200 }); break;
       case 3: this.procs.push({ t: 'cRight', i: 0, n: 150 }); break;
       case 4: this.procs.push({ t: 'cDown', i: 0, n: 150 }); break;
@@ -783,42 +784,42 @@ export class CVI {
     }
   }
   startStencilWipe(t) {
-    const N = this.N, pol = this.P.stencilErase ? 0 : 1;
+    const W = this.W, H = this.H, pol = this.P.stencilErase ? 0 : 1;
     switch (t) {
       case 0: this.stencil.fill(pol); break;
       case 1: this.procs.push({ t: 'sTex', i: 0, n: 250 }); break;
-      case 2: this.procs.push({ t: 'sRight', i: 0, n: N }); break;
-      case 3: this.procs.push({ t: 'sDown', i: 0, n: N }); break;
+      case 2: this.procs.push({ t: 'sRight', i: 0, n: W }); break;
+      case 3: this.procs.push({ t: 'sDown', i: 0, n: H }); break;
       case 4: this.procs.push({ t: 'sInv', i: 0, n: 400 }); break;
       case 5: this.procs.push({ t: 'sEdge', i: 0, n: 250 }); break;
       case 6: this.procs.push({ t: 'sCol', i: 0, n: 300 }); break;
       case 7: this.procs.push({ t: 'sDis', i: 0 }); break;
       case 8: {
-        const P = this.P, cx = (P.hpan / 255) * N, cy = (P.vpan / 255) * N;
-        const sz = 8 + (P.zoom / 255) * N, s = bip(P.stretch);
+        const P = this.P, cx = (P.hpan / 255) * W, cy = (P.vpan / 255) * H;
+        const sz = 8 + (P.zoom / 255) * H, s = bip(P.stretch);
         const w = sz * (1 + Math.max(0, s) * 2) / 2, h = sz * (1 + Math.max(0, -s) * 2) / 2;
-        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) this.stencil[y * N + x] = Math.abs(x - cx) <= w && Math.abs(y - cy) <= h ? pol : pol ^ 1;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) this.stencil[y * W + x] = Math.abs(x - cx) <= w && Math.abs(y - cy) <= h ? pol : pol ^ 1;
         break;
       }
     }
   }
   runProcs() {
-    const N = this.N, P = this.P, pol = P.stencilErase ? 0 : 1;
-    const span = (p) => { const a = Math.floor(p.i * N / p.n), b = Math.floor((p.i + 1) * N / p.n); return [a, Math.max(a + 1, b)]; };
+    const W = this.W, H = this.H, NN = W * H, P = this.P, pol = P.stencilErase ? 0 : 1;
+    const span = (p, L) => { const a = Math.floor(p.i * L / p.n), b = Math.floor((p.i + 1) * L / p.n); return [a, Math.max(a + 1, b)]; };
     const keep = [];
     for (const p of this.procs) {
       let done = false;
       switch (p.t) {
         case 'cTex': case 'cRight': case 'sTex': case 'sInv': case 'sEdge': case 'sCol': case 'copy': {
-          const [a, b] = span(p);
-          for (let x = a; x < b && x < N; x++) for (let y = 0; y < N; y++) {
-            const si = y * N + x;
+          const [a, b] = span(p, W);
+          for (let x = a; x < b && x < W; x++) for (let y = 0; y < H; y++) {
+            const si = y * W + x;
             if (p.t === 'cTex') { if (texel(P.texture, x, y)) this.paintPixel(si, this.paintColour(x, y), 1); }
             else if (p.t === 'cRight') this.paintPixel(si, this.paintColour(x, y), 1);
             else if (p.t === 'sTex') this.stencil[si] = texel(P.texture, x, y) ? pol : pol ^ 1;
             else if (p.t === 'sInv') this.stencil[si] ^= 1;
             else if (p.t === 'sEdge') {
-              const s = this.store, i3 = si * 3, j3 = (y * N + Math.min(N - 1, x + 1)) * 3, k3 = (Math.min(N - 1, y + 1) * N + x) * 3;
+              const s = this.store, i3 = si * 3, j3 = (y * W + Math.min(W - 1, x + 1)) * 3, k3 = (Math.min(H - 1, y + 1) * W + x) * 3;
               const dd = Math.abs(s[i3] - s[j3]) + Math.abs(s[i3 + 1] - s[j3 + 1]) + Math.abs(s[i3 + 2] - s[j3 + 2]) + Math.abs(s[i3] - s[k3]) + Math.abs(s[i3 + 1] - s[k3 + 1]) + Math.abs(s[i3 + 2] - s[k3 + 2]);
               this.stencil[si] = dd > 3 ? pol : pol ^ 1;
             } else if (p.t === 'sCol') {
@@ -836,28 +837,28 @@ export class CVI {
           done = ++p.i >= p.n; break;
         }
         case 'cDown': case 'cChange': {
-          const [a, b] = span(p);
-          for (let y = a; y < b && y < N; y++) for (let x = 0; x < N; x++) this.paintPixel(y * N + x, this.paintColour(x, y), 1);
+          const [a, b] = span(p, H);
+          for (let y = a; y < b && y < H; y++) for (let x = 0; x < W; x++) this.paintPixel(y * W + x, this.paintColour(x, y), 1);
           done = ++p.i >= p.n; break;
         }
-        case 'sRight': { const x = p.i; for (let y = 0; y < N; y++) this.stencil[y * N + x] = pol; done = ++p.i >= N; break; }
-        case 'sDown': { const y = p.i; this.stencil.fill(pol, y * N, y * N + N); done = ++p.i >= N; break; }
-        case 'sDis': { const n = (N * N / 150) | 0; for (let j = 0; j < n; j++) this.stencil[(this.rand() * N * N) | 0] = pol; p.i++; break; }
-        case 'cDis': { const n = (N * N / 150) | 0; for (let j = 0; j < n; j++) { const si = (this.rand() * N * N) | 0; this.paintPixel(si, this.paintColour(si % N, (si / N) | 0), 1); } p.i++; break; }
+        case 'sRight': { const x = p.i; for (let y = 0; y < H; y++) this.stencil[y * W + x] = pol; done = ++p.i >= W; break; }
+        case 'sDown': { const y = p.i; this.stencil.fill(pol, y * W, y * W + W); done = ++p.i >= H; break; }
+        case 'sDis': { const n = (NN / 150) | 0; for (let j = 0; j < n; j++) this.stencil[(this.rand() * NN) | 0] = pol; p.i++; break; }
+        case 'cDis': { const n = (NN / 150) | 0; for (let j = 0; j < n; j++) { const si = (this.rand() * NN) | 0; this.paintPixel(si, this.paintColour(si % W, (si / W) | 0), 1); } p.i++; break; }
         case 'tunnel': {
           // concentric colour rings radiating from the centre; PAN moves the centre, ZOOM ring width, STRETCH aspect
           this.tunnelHist.unshift(this.paintColour());
           if (this.tunnelHist.length > 400) this.tunnelHist.length = 400;
-          const cx = (P.hpan / 255) * N, cy = (P.vpan / 255) * N;
+          const cx = (P.hpan / 255) * W, cy = (P.vpan / 255) * H;
           const ring = 1 + (P.zoom / 255) * 10, s = bip(P.stretch), ax = 1 + Math.max(0, s) * 3, ay = 1 + Math.max(0, -s) * 3;
           const intro = p.i < 150;
-          const H = this.tunnelHist;
-          for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-            const si = y * N + x;
+          const hist = this.tunnelHist;
+          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+            const si = y * W + x;
             if (this.protectedAt(si)) continue;
             const r = Math.hypot((x - cx) / ax, (y - cy) / ay);
-            if (intro && r > (p.i / 150) * N) continue;
-            const k = H[Math.min(H.length - 1, Math.floor(r / ring))];
+            if (intro && r > (p.i / 150) * Math.max(W, H)) continue;
+            const k = hist[Math.min(hist.length - 1, Math.floor(r / ring))];
             this.store[si * 3] = Math.round(k[0] * 15); this.store[si * 3 + 1] = Math.round(k[1] * 15); this.store[si * 3 + 2] = Math.round(k[2] * 15);
           }
           p.i++; break;
@@ -870,23 +871,23 @@ export class CVI {
 
   // ---- built-in images (test pattern, colour bars) ----
   drawPattern(kind) {
-    const N = this.N, s = this.store;
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      const i = (y * N + x) * 3;
+    const W = this.W, H = this.H, s = this.store;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 3;
       let r, g, b;
       if (kind === 'bars') {
-        const bar = Math.floor(x / N * 8); // EBU 100/75 order
-        const v = y < N * 0.75 ? 11 : 15;
+        const bar = Math.floor(x / W * 8); // EBU 100/75 order
+        const v = y < H * 0.75 ? 11 : 15;
         r = [v, v, 0, 0, v, v, 0, 0][bar]; g = [v, v, v, v, 0, 0, 0, 0][bar]; b = [v, 0, v, 0, v, 0, v, 0][bar];
         if (bar === 0) { r = g = b = 15; }
-        if (y >= N * 0.75) { const q = Math.floor(x / N * 4); r = g = b = [0, 5, 10, 15][q]; }
+        if (y >= H * 0.75) { const q = Math.floor(x / W * 4); r = g = b = [0, 5, 10, 15][q]; }
       } else {
         const grid = (x % 32 === 0 || y % 32 === 0) ? 15 : 0;
-        const circ = Math.abs(Math.hypot(x - N / 2, y - N / 2) - N * 0.4) < 1.5 ? 15 : 0;
-        const ramp = y > N * 0.42 && y < N * 0.58 ? Math.floor(x / N * 16) : -1;
+        const circ = Math.abs(Math.hypot(x - W / 2, y - H / 2) - H * 0.4) < 1.5 ? 15 : 0;
+        const ramp = y > H * 0.42 && y < H * 0.58 ? Math.floor(x / W * 16) : -1;
         r = g = b = Math.max(grid, circ);
         if (ramp >= 0) { r = g = b = ramp; }
-        if (y > N * 0.25 && y < N * 0.4 && x > N * 0.2 && x < N * 0.8) { const hc = hsv2rgb((x - N * 0.2) / (N * 0.6), 1, 1); r = Math.round(hc[0] * 15); g = Math.round(hc[1] * 15); b = Math.round(hc[2] * 15); }
+        if (y > H * 0.25 && y < H * 0.4 && x > W * 0.2 && x < W * 0.8) { const hc = hsv2rgb((x - W * 0.2) / (W * 0.6), 1, 1); r = Math.round(hc[0] * 15); g = Math.round(hc[1] * 15); b = Math.round(hc[2] * 15); }
       }
       s[i] = r; s[i + 1] = g; s[i + 2] = b;
     }

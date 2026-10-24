@@ -5,13 +5,16 @@ import { Automation } from './automation.js';
 import { probePlayable, convertToMp4, VIDEO_ACCEPT, looksLikeVideo } from './convert.js';
 import { drawDemo } from './demo.js';
 
-const N = 256;
+const N = 256; // thumbnails only; the live field store size is gridW x gridH
 const $ = (id) => document.getElementById(id);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 // ================================================================ state
-const engine = new CVI(N);
+let gridW = 256, gridH = 256;
+let engine = new CVI(gridW, gridH);
+const settings = { detail: 0, smooth: 0 };
+const DETAIL = [256, 360, 480]; // short side of the field store: original CVI, fine, extra fine
 let looks = clone(LOOK_DEFAULTS);
 let auto = new Automation();
 let fieldRate = 50;
@@ -27,8 +30,23 @@ let renderer;
 try { renderer = new Renderer(outCanvas, N); }
 catch (e) { document.body.innerHTML = `<p class="err" style="padding:20px">This browser can't run CVI-84 (${esc(e.message)}). Use a current Chrome or Edge.</p>`; throw e; }
 
-const mkSampler = () => { const c = document.createElement('canvas'); c.width = c.height = N; const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; return x; };
-const samp1 = mkSampler(), samp2 = mkSampler();
+const mkSampler = (w = N, h = w) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; return x; };
+let samp1 = mkSampler(gridW, gridH), samp2 = mkSampler(gridW, gridH);
+// field-store grid follows the source's aspect ratio (square pixels); detail sets the short side
+function gridFor(w, h, level) { const s = DETAIL[level] || 256; return w >= h ? [Math.round(s * w / h), s] : [s, Math.round(s * h / w)]; }
+function rebuildGrid() {
+  const [w, h] = gridFor(...srcDims(), settings.detail);
+  if (w === gridW && h === gridH) return false;
+  const P0 = { ...engine.P };
+  gridW = w; gridH = h;
+  engine = new CVI(w, h); engine.P = P0;
+  engine.g = { hpan: P0.hpan, vpan: P0.vpan, stretch: P0.stretch, zoom: P0.zoom };
+  samp1 = mkSampler(w, h); samp2 = mkSampler(w, h);
+  startSnap = null; undoStack.length = 0;
+  window.__cvi && (window.__cvi.engine = engine);
+  uiDirty = true;
+  return true;
+}
 
 function makeDemo() { const c = document.createElement('canvas'); c.width = 640; c.height = 480; return c; }
 const demo = makeDemo();
@@ -65,15 +83,16 @@ function audioAt(f) {
 const v1Source = () => (src.v1 && src.v1.el.readyState >= 2 ? src.v1.el : demo);
 const v2Source = () => (src.v2 && src.v2.el.readyState >= 2 ? src.v2.el : null);
 function grabInputs() {
-  samp1.drawImage(v1Source(), 0, 0, N, N);
-  const out = { v1: samp1.getImageData(0, 0, N, N).data, v2: null };
+  samp1.drawImage(v1Source(), 0, 0, gridW, gridH);
+  const out = { v1: samp1.getImageData(0, 0, gridW, gridH).data, v2: null };
   const s2 = v2Source();
-  if (s2) { samp2.drawImage(s2, 0, 0, N, N); out.v2 = samp2.getImageData(0, 0, N, N).data; }
+  if (s2) { samp2.drawImage(s2, 0, 0, gridW, gridH); out.v2 = samp2.getImageData(0, 0, gridW, gridH).data; }
   return out;
 }
+// the source's picture size (from metadata, so it's right even mid-seek)
+function srcDims() { const e = src.v1 && src.v1.el; return e && e.videoWidth ? [e.videoWidth, e.videoHeight] : [640, 480]; }
 function fitPreview() {
-  const s = v1Source();
-  let w = s.videoWidth || s.width || 640, h = s.videoHeight || s.height || 480;
+  let [w, h] = srcDims();
   if (h > 720) { w = Math.round(w * 720 / h); h = 720; }
   w -= w % 2; h -= h % 2;
   renderer.resize(w, h); overlay.width = w; overlay.height = h;
@@ -120,7 +139,9 @@ async function loadVideo(which, file) {
     el.onended = () => { if (loop) { home(); play(); } else pause(); };
     $('srcName').textContent = file.name;
     $('drop').hidden = true;
-    startSnap = null; engine.field = 0;
+    startSnap = null;
+    if (!rebuildGrid()) { engine.store.fill(0); engine.stencil.fill(0); engine.cascade.fill(0); }
+    engine.field = 0;
     if (!presetTouched) applyFactory(76, false);
     fitPreview();
     analyseAudio(file).then((env) => { if (src.v1 && src.v1.file === file) src.v1.env = env; });
@@ -331,7 +352,7 @@ function tick(now) {
 function draw() {
   const ana = engine.P.anaSrc && v2Source() ? v2Source() : v1Source();
   if (renderer.w === 0) fitPreview();
-  renderer.uploadAnalog(ana); renderer.uploadView(engine.view, N);
+  renderer.uploadAnalog(ana); renderer.uploadView(engine.view, gridW, gridH);
   renderer.render(looks, engine.field, engine.P.blanking);
 }
 
@@ -405,7 +426,7 @@ const padUp = (e) => { if (!padDown) return; padDown = false; const p = padPos(e
 screenEl.addEventListener('pointerup', padUp); screenEl.addEventListener('pointercancel', padUp);
 screenEl.addEventListener('pointerleave', () => { hover = null; });
 function pickKeyAt(p) {
-  const inp = grabInputs()[engine.P.keySrc ? 'v2' : 'v1'] || grabInputs().v1, i = ((Math.floor(p.y * N) * N) + Math.floor(p.x * N)) * 4;
+  const inp = grabInputs()[engine.P.keySrc ? 'v2' : 'v1'] || grabInputs().v1, i = ((Math.floor(p.y * gridH) * gridW) + Math.floor(p.x * gridW)) * 4;
   const r = inp[i] / 255, g = inp[i + 1] / 255, b = inp[i + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
   let h = 0; if (d) { h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360; }
   setParam('keyHue', Math.round(h)); setParam('keyMode', 0);
@@ -428,9 +449,9 @@ function drawOverlay() {
   octx.setLineDash([]);
   const tool = currentTool();
   if (hover && (tool !== 'pointer' || pickKeyArmed)) {
-    const cx = (Math.floor(hover.x * N) + 0.5) / N * w, cy = (Math.floor(hover.y * N) + 0.5) / N * h;
+    const cx = (Math.floor(hover.x * gridW) + 0.5) / gridW * w, cy = (Math.floor(hover.y * gridH) + 0.5) / gridH * h;
     if (tool === 'text') { octx.fillStyle = '#fff9'; octx.font = `${Math.round(h / 26)}px Geist, sans-serif`; octx.fillText((engine.P.title || '').split('\n')[0], cx, cy + h / 40); }
-    const br = [1, 2, 3, 4, 6, 9, 13, 2, 3, 5, 6, 2, 6, 6, 6, 13][engine.P.brush] / N * w;
+    const br = [1, 2, 3, 4, 6, 9, 13, 2, 3, 5, 6, 2, 6, 6, 6, 13][engine.P.brush] / gridW * w;
     octx.strokeStyle = tool === 'pick' || pickKeyArmed ? '#ffb02e' : '#fff';
     octx.beginPath();
     if (tool === 'brush' || tool === 'dots') octx.arc(cx, cy, Math.max(3, br), 0, 7);
@@ -555,6 +576,16 @@ function buildInspector() {
   let b = section('Mode', true);
   select(b, { p: 'display', opts: MODES.map(([v, t, o]) => [v, `${t}  (${o})`]), groups: [['Live video', [5, 15, 14, 12]], ['Trails & catch-up', [4, 10, 18, 9, 11]], ['Canvas & paint', [1, 2, 3, 6, 7, 8, 13]], ['Colour crawl', [16, 17]], ['Feedback', [19, 20]]].map(([g, ids]) => [g, ids.map((d) => d - 1)]) });
   const md = note(b, ''); binds.push(() => { md.textContent = MODE_DESC[P().display] || ''; });
+
+  // ---- Pixels
+  b = section('Pixels', true);
+  const dt = h(`<div class="field" style="grid-template-columns:88px minmax(0,1fr)"><span>Pixel detail</span><div class="seg"><button type="button" data-v="0">Original</button><button type="button" data-v="1">Fine</button><button type="button" data-v="2">Extra fine</button></div></div>`);
+  dt.querySelector('.seg').onclick = (e) => { const x = e.target.closest('button'); if (!x) return; settings.detail = +x.dataset.v; rebuildGrid(); toast(`Pixel grid ${gridW} × ${gridH}`); };
+  const sm = h(`<div class="row"><label>Smooth pixels <span class="desc">soft blocks instead of squares</span></label><button type="button" class="switch" role="switch" aria-label="Smooth pixels"></button></div>`);
+  sm.querySelector('.switch').onclick = () => { settings.smooth = settings.smooth ? 0 : 1; renderer.setSmooth(settings.smooth); uiDirty = true; };
+  binds.push(() => { dt.querySelectorAll('button').forEach((x) => x.classList.toggle('on', +x.dataset.v === settings.detail)); sm.querySelector('.switch').setAttribute('aria-checked', settings.smooth ? 'true' : 'false'); });
+  b.appendChild(dt); b.appendChild(sm);
+  const gi = note(b, ''); binds.push(() => { gi.textContent = `Field store ${gridW} × ${gridH} pixels, shaped to your video. Original is the real CVI resolution; finer grids look cleaner but work your computer harder (export is never affected).`; });
 
   // ---- Color
   b = section('Color', true);
@@ -855,7 +886,7 @@ const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
 $('btnSave').onclick = () => {
   const snap = exportBase();
-  const proj = { app: 'CVI-84', version: 2, fieldRate, current, params: engine.P, looks, automation: auto.toJSON(),
+  const proj = { app: 'CVI-84', version: 3, fieldRate, current, settings: { ...settings }, grid: [gridW, gridH], params: engine.P, looks, automation: auto.toJSON(),
     start: { store: b64(snap.store), stencil: b64(snap.stencil), rng: snap.rng, params: snap.P, looks: snap.looks, current: snap.current || current } };
   download(new Blob([JSON.stringify(proj)], { type: 'application/json' }), (src.v1 ? src.v1.name.replace(/\.[^.]+$/, '') : 'cvi-84') + '.cvi84.json');
   toast('Project saved');
@@ -867,12 +898,13 @@ $('fileProj').onchange = async (e) => {
     const p = JSON.parse(await f.text());
     if (p.app !== 'CVI-84') throw new Error('Not a CVI-84 project file');
     fieldRate = p.fieldRate || 50;
+    if (p.settings) { Object.assign(settings, p.settings); renderer.setSmooth(settings.smooth); rebuildGrid(); }
     engine.P = { ...engine.P, ...p.params };
     looks = { ...clone(LOOK_DEFAULTS), ...p.looks };
     auto = Automation.fromJSON(p.automation || {});
     if (p.current) current = p.current; else if (p.presetNo != null) current = { kind: 'factory', n: p.presetNo };
     presetTouched = true;
-    if (p.start) {
+    if (p.start && unb64(p.start.store).length === engine.store.length) {
       engine.store.set(unb64(p.start.store)); engine.stencil.set(unb64(p.start.stencil)); engine.rng.s = p.start.rng;
       startSnap = engine.snapshot(true); startSnap.field = 0;
       if (p.start.params) startSnap.P = { ...engine.P, ...p.start.params };
@@ -908,15 +940,16 @@ async function runExport() {
   const wid = Math.round((hgt * sw / sh) / 2) * 2; hgt -= hgt % 2;
   const q = { high: MB.QUALITY_HIGH, vhigh: MB.QUALITY_VERY_HIGH, med: MB.QUALITY_MEDIUM }[$('exQ').value];
   if (!(await MB.canEncodeVideo('avc', { width: wid, height: hgt }))) throw new Error('This browser cannot encode H.264 at that size. Try 720p, or use Chrome or Edge.');
-  const eng = new CVI(N);
+  const eng = new CVI(gridW, gridH);
   const base = exportBase();
   eng.restore(base); eng.field = 0;
   const lk = clone(base.looks);
   const au = Automation.fromJSON(clone(auto.toJSON()));
   const canvas = new OffscreenCanvas(wid, hgt);
-  const rend = new Renderer(canvas, N); rend.resize(wid, hgt);
-  const s1 = new OffscreenCanvas(N, N).getContext('2d', { willReadFrequently: true });
-  const s2 = new OffscreenCanvas(N, N).getContext('2d', { willReadFrequently: true });
+  const rend = new Renderer(canvas, N); rend.resize(wid, hgt); rend.setSmooth(settings.smooth);
+  const GW = gridW, GH = gridH;
+  const s1 = new OffscreenCanvas(GW, GH).getContext('2d', { willReadFrequently: true });
+  const s2 = new OffscreenCanvas(GW, GH).getContext('2d', { willReadFrequently: true });
   let sink2 = null, v2canvas = null;
   if (src.v2) {
     const in2 = new MB.Input({ source: new MB.BlobSource(src.v2.file), formats: MB.ALL_FORMATS });
@@ -933,16 +966,16 @@ async function runExport() {
       process: async (sample) => {
         if (t0 === null) t0 = sample.timestamp;
         const t = sample.timestamp - t0;
-        sample.draw(s1, 0, 0, N, N);
-        const inputs = { v1: s1.getImageData(0, 0, N, N).data, v2: null };
+        sample.draw(s1, 0, 0, GW, GH);
+        const inputs = { v1: s1.getImageData(0, 0, GW, GH).data, v2: null };
         let s2s = null;
-        if (sink2) { s2s = await sink2.getSample(t % v2dur); if (s2s) { s2s.draw(s2, 0, 0, N, N); inputs.v2 = s2.getImageData(0, 0, N, N).data; } }
+        if (sink2) { s2s = await sink2.getSample(t % v2dur); if (s2s) { s2s.draw(s2, 0, 0, GW, GH); inputs.v2 = s2.getImageData(0, 0, GW, GH).data; } }
         const target = Math.floor(t * fieldRate + 1e-6);
         while (eng.field <= target) { applyAutomation(eng.field, eng, lk, au); eng.step(inputs, audioAt(eng.field)); }
         if (eng.P.anaSrc && s2s) { s2s.draw(v2canvas.getContext('2d'), 0, 0, v2canvas.width, v2canvas.height); rend.uploadAnalog(v2canvas); }
         else { const vf = sample.toVideoFrame(); rend.uploadAnalog(vf); vf.close(); }
         if (s2s) s2s.close();
-        rend.uploadView(eng.view, N); rend.render(lk, eng.field, eng.P.blanking);
+        rend.uploadView(eng.view, GW, GH); rend.render(lk, eng.field, eng.P.blanking);
         return canvas;
       },
     },

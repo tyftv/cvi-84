@@ -21,7 +21,8 @@ uniform sampler2D analog; uniform sampler2D view; uniform float blanking; unifor
 void main(){
   vec2 u = uv; u.y = 1.-u.y;
   vec4 v = texture(view, u);
-  int plane = int(v.a*255.+.5);
+  ivec2 vs = textureSize(view, 0);
+  int plane = int(texelFetch(view, clamp(ivec2(u*vec2(vs)), ivec2(0), vs-1), 0).a*255.+.5);
   vec3 an = hasVideo > .5 ? texture(analog, u).rgb : vec3(0.);
   vec3 c = plane==0 ? an : plane==3 ? (v.rgb+an)*.5 : v.rgb;
   if (blanking > .5) { vec2 b = step(vec2(.045,.03), u) * step(u, vec2(.955,.97)); c *= b.x*b.y; }
@@ -253,11 +254,18 @@ export class Renderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
     this.hasVideo = 1;
   }
-  uploadView(data, N) {
+  uploadView(data, w, h = w) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex.view);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  }
+  // smooth = soften the field-store pixels instead of hard squares
+  setSmooth(on) {
+    const gl = this.gl, f = on ? gl.LINEAR : gl.NEAREST;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex.view);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    this.smooth = !!on;
   }
   pass(name, uniforms, srcTex, target, extra) {
     const gl = this.gl, pr = this.progs[name];
