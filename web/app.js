@@ -3,7 +3,6 @@ import { FACTORY, presetState } from './presets.js';
 import { Renderer, LOOK_DEFAULTS } from './gl.js';
 import { Automation } from './automation.js';
 import { probePlayable, convertToMp4, VIDEO_ACCEPT, looksLikeVideo } from './convert.js';
-import { drawDemo } from './demo.js';
 import { Chain, MODULES, CATEGORIES, renderChain } from './chain.js';
 
 const $ = (id) => document.getElementById(id);
@@ -362,7 +361,6 @@ let lastTick = performance.now(), freeAcc = 0, demoT = 0;
 function tick(now) {
   const dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
   if (!playing) {
-    if (!src.v1) { demoT += dt; drawDemo(demo, demoT); }
     freeAcc += dt * fieldRate;
     freeSteps = Math.min(4, Math.floor(freeAcc)); freeAcc -= Math.floor(freeAcc);
     targetField = curField();
@@ -384,7 +382,7 @@ let dragId = null;
 function buildStrip() {
   const host = $('strip'); host.innerHTML = '';
   const arrow = () => `<span class="arrow"><svg viewBox="0 0 24 24">${SVG.arrow}</svg></span>`;
-  host.insertAdjacentHTML('beforeend', `<button type="button" class="pill" id="pillIn" title="${src.v1 ? esc(src.v1.name) : 'Demo clip'}">Video 1</button>`);
+  host.insertAdjacentHTML('beforeend', `<button type="button" class="pill" id="pillIn" title="${src.v1 ? esc(src.v1.name) : 'Import a video'}">${src.v1 ? 'Video 1' : 'Import video'}</button>`);
   for (const n of chain.nodes) {
     const m = MODULES[n.type];
     host.insertAdjacentHTML('beforeend', arrow());
@@ -1093,10 +1091,9 @@ async function runExport() {
 buildTools();
 buildLib();
 buildPresets();
-// a starter chain so the first view shows what the tool does on any footage
-addBlock('colorize'); addBlock('vhs');
-selected = chain.nodes[0].id;
-drawDemo(demo, 0);
+// start blank: no video, no effects
+{ const g = demo.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, demo.width, demo.height); }
+selected = null;
 fitPreview();
 requestAnimationFrame(tick);
 window.__cvi = { get chain() { return chain; }, get auto() { return auto; }, addBlock, select, applyPreset, setNodeParam, play, pause, seek, importVideo, loadVideo, runExport, selectTool, removeBlock };
