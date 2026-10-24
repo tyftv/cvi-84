@@ -29,6 +29,7 @@ export class Automation {
     while (i > 0 && this.events[i - 1].f > f) i--;
     this.events.splice(i, 0, { f, a: JSON.parse(JSON.stringify(a)) });
     if (i <= this.cursor) this.cursor++;
+    if (this.cur) for (const [k, c] of this.cur) if (i < c) this.cur.set(k, c + 1);
   }
   clearLane(lane) { if (lane === '#events') this.events = []; else this.lanes.delete(lane); }
 
@@ -56,6 +57,25 @@ export class Automation {
     return out;
   }
 
+  // ---- per-block reading (lanes are named "<blockId>|<param>", events carry a.node) ----
+  valuesFor(id, f) {
+    const out = [], pre = id + '|';
+    for (const [lane] of this.lanes) if (lane.startsWith(pre) && !this.touch.has(lane)) out.push([lane.slice(pre.length), this.valueAt(lane, f)]);
+    return out;
+  }
+  eventsFor(id, f) {
+    if (!this.cur) this.cur = new Map();
+    let c = this.cur.get(id) || 0;
+    const ev = this.events;
+    if (c > 0 && c <= ev.length && ev[c - 1] && ev[c - 1].f >= f) c = 0; // went backwards: rescan
+    while (c < ev.length && ev[c].f < f) c++;
+    const out = [];
+    let j = c;
+    while (j < ev.length && ev[j].f === f) { if (ev[j].a.node === id) out.push(ev[j].a); j++; }
+    this.cur.set(id, j);
+    return out;
+  }
+  resetCursors() { this.cur = new Map(); }
   toJSON() { return { lanes: [...this.lanes.entries()], events: this.events }; }
   static fromJSON(j) { const a = new Automation(); a.lanes = new Map(j.lanes || []); a.events = j.events || []; return a; }
 }

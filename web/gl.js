@@ -186,6 +186,36 @@ void main(){
 
 const FS_COPY = HEAD + `uniform sampler2D src; void main(){ o = vec4(texture(src, uv).rgb,1.); }`;
 
+// chain passes ---------------------------------------------------------------
+// source upload (top-down rows) -> FBO orientation
+const FS_SRC = HEAD + `uniform sampler2D src; void main(){ o = vec4(texture(src, vec2(uv.x, 1.-uv.y)).rgb,1.); }`;
+// CVI planes over an input picture that is already in FBO orientation
+const FS_COMP2 = HEAD + `
+uniform sampler2D analog; uniform sampler2D view; uniform float blanking;
+void main(){
+  vec2 u = vec2(uv.x, 1.-uv.y);
+  vec4 v = texture(view, u);
+  ivec2 vs = textureSize(view, 0);
+  int plane = int(texelFetch(view, clamp(ivec2(u*vec2(vs)), ivec2(0), vs-1), 0).a*255.+.5);
+  vec3 an = texture(analog, uv).rgb;
+  vec3 c = plane==0 ? an : plane==3 ? (v.rgb+an)*.5 : v.rgb;
+  if (blanking > .5) { vec2 b = step(vec2(.045,.03), u) * step(u, vec2(.955,.97)); c *= b.x*b.y; }
+  o = vec4(c,1.);
+}`;
+// hardware blanking borders
+const FS_BLANK = HEAD + `uniform sampler2D src; void main(){ vec2 b = step(vec2(.045,.03), uv) * step(uv, vec2(.955,.97)); o = vec4(texture(src, uv).rgb*b.x*b.y, 1.); }`;
+// blend an effect's output with its input
+const FS_MIX = HEAD + `uniform sampler2D src; uniform sampler2D other; uniform float amount;
+void main(){ o = vec4(mix(texture(other, uv).rgb, texture(src, uv).rgb, amount), 1.); }`;
+// downsample for the CVI digitiser: 4x4 box, flipped so readPixels returns top row first
+const FS_GRAB = HEAD + `uniform sampler2D src; uniform vec2 srcRes; uniform vec2 dstRes;
+void main(){
+  vec2 u = vec2(uv.x, 1.-uv.y);
+  vec2 cell = 1./dstRes; vec3 acc = vec3(0.);
+  for (int i=0;i<4;i++) for (int j=0;j<4;j++) acc += texture(src, u + (vec2(float(i),float(j))-1.5)/4.*cell).rgb;
+  o = vec4(acc/16., 1.);
+}`;
+
 export const LOOK_DEFAULTS = {
   bw: { on: 0, mode: 0, contrast: 1.15, bright: 0, gamma: 1, grain: 0.12, grainSize: 1.5, tintAmt: 0, tintHue: 0.08, vignette: 0.3 },
   halftone: { on: 0, style: 0, cell: 8, angle: 45, contrast: 1.2, mixAmt: 1, shape: 0, ink: [0.08, 0.07, 0.12], paper: [0.96, 0.94, 0.88] },
@@ -204,7 +234,9 @@ export class Renderer {
     this.progs = {
       composite: this.prog(FS_COMPOSITE), bw: this.prog(FS_BW), halftone: this.prog(FS_HALFTONE),
       vhs: this.prog(FS_VHS), crt: this.prog(FS_CRT), copy: this.prog(FS_COPY),
+      src: this.prog(FS_SRC), comp2: this.prog(FS_COMP2), mix: this.prog(FS_MIX), grab: this.prog(FS_GRAB), blank: this.prog(FS_BLANK),
     };
+    this.targets = new Map(); this.grabT = null;
     this.tex = { analog: this.makeTex(gl.LINEAR), v2: this.makeTex(gl.LINEAR), view: this.makeTex(gl.NEAREST) };
     this.fbos = [];
     this.w = 0; this.h = 0;
@@ -245,8 +277,65 @@ export class Renderer {
       this.fbos.push({ fb, t });
     }
     this.crtPrev = 3; // fbo 3 holds last CRT output for phosphor persistence
+    for (const t of this.targets.values()) { gl.deleteFramebuffer(t.fb); gl.deleteTexture(t.t); }
+    this.targets.clear();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
+  makeTarget(w, h) {
+    const gl = this.gl, t = this.makeTex(gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    return { fb, t, w, h };
+  }
+  // a named full-size render target (one per chain slot), created on demand
+  target(id) {
+    let t = this.targets.get(id);
+    if (!t) { t = this.makeTarget(this.w, this.h); this.targets.set(id, t); }
+    return t;
+  }
+  dropTargets(keep) { for (const [id, t] of this.targets) if (!keep.has(id)) { this.gl.deleteFramebuffer(t.fb); this.gl.deleteTexture(t.t); this.targets.delete(id); } }
+  // generic pass into a target object (or the canvas when target is null)
+  run(name, uniforms, srcTex, target, extra) {
+    const gl = this.gl, pr = this.progs[name];
+    gl.useProgram(pr.p);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fb : null);
+    gl.viewport(0, 0, target ? target.w : this.w, target ? target.h : this.h);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    let unit = 0;
+    const bind = (nm, t) => { if (pr.u[nm] == null) return; gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(pr.u[nm], unit); unit++; };
+    if (srcTex) bind('src', srcTex);
+    if (extra) for (const k in extra) bind(k, extra[k]);
+    if (pr.u.res) gl.uniform2f(pr.u.res, this.w, this.h);
+    if (pr.u.scale) gl.uniform1f(pr.u.scale, this.h / 720);
+    for (const k in uniforms) {
+      const loc = pr.u[k]; if (loc == null) continue;
+      const v = uniforms[k];
+      if (Array.isArray(v)) { if (v.length === 2) gl.uniform2fv(loc, v); else gl.uniform3fv(loc, v); } else gl.uniform1f(loc, +v);
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  // upload a video frame / canvas into a texture slot ('analog' = video 1, 'v2' = video 2)
+  uploadSource(slot, src) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex[slot]);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  }
+  // read a texture back at the CVI grid size (RGBA8, top row first)
+  grab(tex, gw, gh) {
+    const gl = this.gl;
+    if (!this.grabT || this.grabT.w !== gw || this.grabT.h !== gh) {
+      if (this.grabT) { gl.deleteFramebuffer(this.grabT.fb); gl.deleteTexture(this.grabT.t); }
+      this.grabT = this.makeTarget(gw, gh);
+    }
+    this.run('grab', { srcRes: [this.w, this.h], dstRes: [gw, gh] }, tex, this.grabT);
+    const out = new Uint8Array(gw * gh * 4);
+    gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    return out;
+  }
+  present(tex) { this.run('copy', {}, tex, null); }
   uploadAnalog(src) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex.analog);
