@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CVI-84</title>
+<meta name="description" content="A field-accurate emulation of the 1984 Fairlight Computer Video Instrument, with CRT, VHS, halftone and black-and-white looks. Load a video, play it live, record automation, export MP4.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=VT323&display=swap">
+<style>
+/* Layout: a 1984 broadcast console. Monitor + looks rack on top, ten-fader console under it, sequencer timeline at the bottom.
+   One committed dark look (it's hardware), so no light theme. */
+:root {
+  color-scheme: dark;
+  --chassis: #1c1e22;      /* gunmetal panel */
+  --chassis-2: #26292f;
+  --chassis-3: #31353c;
+  --rule: #3c4048;
+  --silk: #c9c3b4;          /* silkscreen ink, warm off-white */
+  --silk-dim: #8b877d;
+  --menu-blue: #1f3fb8;     /* the CVI's white-on-blue menu pages */
+  --menu-ink: #f4f4f4;
+  --amber: #ffb02e;         /* indicator lamps */
+  --rec: #ff3b30;
+  --cap-hsv: #d9d2c2; --cap-rate: #e0a33a; --cap-geo: #6aa6d8;
+  --display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --body: 'Barlow', system-ui, sans-serif;
+  --crt: 'VT323', 'Courier New', monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: #121316; color: var(--silk); font: 14px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+.app { display: grid; gap: 12px; padding-block: 12px 20px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); max-width: 1500px; margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) 320px; grid-template-areas: "top top" "mon looks" "con looks" "seq seq"; }
+@media (max-width: 1000px) { .app { grid-template-columns: minmax(0,1fr); grid-template-areas: "top" "mon" "con" "looks" "seq"; } }
+
+/* ---------- top strip ---------- */
+.top { grid-area: top; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
+.brand h1 { margin: 0; font: 700 28px/1 var(--display); letter-spacing: .06em; color: #fff; }
+.brand span { font: 600 12px var(--display); letter-spacing: .22em; text-transform: uppercase; color: var(--silk-dim); }
+.tbtn { background: var(--chassis-2); border: 1px solid var(--rule); border-radius: 3px; padding: 7px 12px; font: 600 13px var(--display); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
+.tbtn:hover { background: var(--chassis-3); }
+.tbtn.primary { background: var(--amber); color: #1a1205; border-color: #ffc867; }
+.tbtn.primary:hover { background: #ffc14f; }
+.srcname { font: 500 12px var(--body); color: var(--silk-dim); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- monitor ---------- */
+.monitor { grid-area: mon; background: linear-gradient(#2a2d33, #1e2025); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; min-width: 0; }
+.screen { position: relative; background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 4 / 3; max-height: 62vh; margin: 0 auto; box-shadow: inset 0 0 0 1px #000, 0 0 0 4px #0b0c0e; touch-action: none; }
+.screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; image-rendering: auto; }
+#overlay { pointer-events: none; }
+.osd { position: absolute; left: 10px; top: 8px; font: 26px/1 var(--crt); color: #fff; text-shadow: 0 0 4px #000, 2px 2px 0 #000; pointer-events: none; white-space: pre; }
+.osd.rec::before { content: "● "; color: var(--rec); }
+.dropzone { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.dropzone div { font: 26px/1.1 var(--crt); color: #fff; text-align: center; background: rgba(0,0,0,.55); padding: 10px 16px; border: 2px dashed rgba(255,255,255,.5); }
+.screen.dragging .dropzone div { border-color: var(--amber); color: var(--amber); }
+.monfoot { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; font: 600 11px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--silk-dim); flex-wrap: wrap; }
+.monfoot b { color: var(--silk); font-weight: 600; }
+
+/* CVI menu pages: white text on blue, quick-select bar at the bottom */
+.menu { position: absolute; inset: 0; background: var(--menu-blue); color: var(--menu-ink); font: 22px/1.05 var(--crt); display: flex; flex-direction: column; padding: 3% 4% 2%; overflow: hidden; }
+.menu h2 { margin: 0 0 .5em; font: inherit; font-size: 28px; letter-spacing: .05em; }
+.menu .items { flex: 1; display: grid; grid-auto-flow: column; grid-template-rows: repeat(10, auto); align-content: start; gap: 2px 24px; overflow: auto; }
+.menu .items.wide { grid-auto-flow: row; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); grid-template-rows: none; }
+.menu .it { background: none; border: 0; text-align: left; padding: 1px 6px; font: inherit; color: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu .it:hover { background: rgba(255,255,255,.14); }
+.menu .it.on { background: var(--menu-ink); color: var(--menu-blue); }
+.menu .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+.menu input[type=text], .menu textarea { background: #0d2380; border: 1px solid #fff; color: #fff; font: inherit; padding: 2px 6px; width: min(100%, 520px); }
+.menu input[type=range] { accent-color: #fff; width: 160px; }
+.menu .note { font-size: 18px; opacity: .85; max-width: 60ch; white-space: normal; }
+.menu .qs { display: grid; grid-template-columns: auto repeat(10, 1fr); gap: 2px; margin-top: 6px; font-size: 18px; }
+.menu .qs span { opacity: .7; padding-right: 6px; }
+.menu .qs button { background: none; border: 1px solid rgba(255,255,255,.35); color: #fff; font: inherit; cursor: pointer; padding: 0; }
+.menu .qs button.on { background: #fff; color: var(--menu-blue); }
+
+/* ---------- console ---------- */
+.console { grid-area: con; background: linear-gradient(#24272c, #1a1c20); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px 16px; display: flex; gap: 18px; flex-wrap: wrap; min-width: 0; }
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group > h3 { margin: 0; font: 600 11px var(--display); letter-spacing: .24em; text-transform: uppercase; color: var(--silk-dim); border-bottom: 1px solid var(--rule); padding-bottom: 4px; }
+.faders { display: flex; gap: 6px; }
+.fader { width: 44px; display: flex; flex-direction: column; align-items: center; gap: 6px; user-select: none; }
+.fader .track { position: relative; width: 36px; height: 150px; cursor: ns-resize; touch-action: none; }
+.fader .track::before { content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px; width: 4px; transform: translateX(-50%); background: #08090a; border-radius: 2px; box-shadow: 0 0 0 1px #000; }
+.fader .tick { position: absolute; left: 4px; right: 4px; height: 1px; background: var(--rule); }
+.fader .tick.mid { background: var(--silk-dim); }
+.fader .cap { position: absolute; left: 3px; right: 3px; height: 16px; margin-top: -8px; border-radius: 2px; background: linear-gradient(#fff3, #0003), var(--cap); box-shadow: 0 2px 3px #000a, inset 0 -2px 0 #0004; }
+.fader .cap::after { content: ""; position: absolute; left: 3px; right: 3px; top: 7px; height: 2px; background: #0007; }
+.fader.auto .cap { outline: 2px solid var(--amber); outline-offset: 1px; }
+.fader label { font: 600 10px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; text-align: center; }
+.fader output { font: 18px/1 var(--crt); color: var(--amber); font-variant-numeric: tabular-nums; }
+.buttons { display: grid; grid-template-columns: repeat(6, 64px); gap: 8px; }
+.hb { position: relative; height: 48px; border-radius: 4px; border: 1px solid #000; background: linear-gradient(#3a3e46, #2a2d33); box-shadow: 0 2px 0 #000, inset 0 1px 0 #ffffff14; font: 600 10px/1.05 var(--display); letter-spacing: .1em; text-transform: uppercase; padding: 14px 4px 4px; cursor: pointer; }
+.hb:active, .hb.held { transform: translateY(1px); box-shadow: 0 1px 0 #000; }
+.hb .num { position: absolute; right: 5px; top: 3px; font: 15px/1 var(--crt); color: var(--silk-dim); }
+.hb::before { content: ""; position: absolute; left: 6px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: #3a2a10; box-shadow: inset 0 0 0 1px #000; }
+.hb.lit::before { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.hb.red { background: linear-gradient(#5a2a2a, #3c1c1c); }
+.hint { font-size: 12px; color: var(--silk-dim); max-width: 46ch; }
+.hint kbd { font: 15px var(--crt); color: var(--silk); border: 1px solid var(--rule); padding: 0 4px; border-radius: 2px; }
+
+/* ---------- looks rack ---------- */
+.looks { grid-area: looks; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.look { background: var(--chassis); border: 1px solid var(--rule); border-radius: 8px; }
+.look header { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
+.look header h3 { margin: 0; flex: 1; font: 700 15px var(--display); letter-spacing: .14em; text-transform: uppercase; }
+.look header small { font: 500 11px var(--body); color: var(--silk-dim); }
+.pwr { width: 38px; height: 20px; border-radius: 10px; border: 1px solid #000; background: #2a2d33; position: relative; cursor: pointer; flex: none; }
+.pwr::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #5d5f63; transition: left .12s, background .12s; }
+.pwr[aria-checked="true"] { background: #3a2a10; }
+.pwr[aria-checked="true"]::after { left: 20px; background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.look .body { padding: 2px 12px 12px; display: grid; gap: 7px; }
+.look.closed .body { display: none; }
+.knob { display: grid; grid-template-columns: 92px minmax(0,1fr) 42px; align-items: center; gap: 8px; font-size: 12px; }
+.knob span { color: var(--silk-dim); }
+.knob input[type=range] { width: 100%; accent-color: var(--amber); }
+.knob output { font: 16px var(--crt); color: var(--amber); text-align: right; font-variant-numeric: tabular-nums; }
+.knob select { background: var(--chassis-2); border: 1px solid var(--rule); border-radius: 3px; padding: 2px 4px; grid-column: 2 / 4; }
+.knob input[type=color] { width: 100%; height: 22px; border: 1px solid var(--rule); background: none; padding: 0; grid-column: 2 / 4; }
+.knob.auto span { color: var(--amber); }
+
+/* ---------- sequencer timeline ---------- */
+.seq { grid-area: seq; background: var(--chassis); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.transport { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.transport .tc { font: 30px/1 var(--crt); color: var(--amber); min-width: 150px; font-variant-numeric: tabular-nums; }
+.tr { width: 40px; height: 34px; border-radius: 4px; border: 1px solid #000; background: linear-gradient(#3a3e46, #2a2d33); cursor: pointer; display: grid; place-items: center; }
+.tr svg { width: 16px; height: 16px; fill: var(--silk); }
+.tr.rec svg { fill: var(--rec); }
+.tr.rec.armed { background: linear-gradient(#6b1d1a, #3d100e); box-shadow: 0 0 10px #ff3b3066; }
+.tr.rec.armed svg { fill: #fff; }
+.tr.on { box-shadow: inset 0 0 0 2px var(--amber); }
+.transport .sp { flex: 1; }
+.transport .lbl { font: 600 11px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--silk-dim); }
+#timeline { width: 100%; height: 150px; display: block; margin-top: 10px; background: #111214; border: 1px solid var(--rule); border-radius: 4px; cursor: pointer; touch-action: none; }
+.seqnote { margin: 8px 0 0; font-size: 12px; color: var(--silk-dim); }
+
+/* ---------- export dialog ---------- */
+dialog { background: var(--chassis-2); color: var(--silk); border: 1px solid var(--rule); border-radius: 10px; padding: 20px 22px; width: min(460px, calc(100vw - 32px)); }
+dialog::backdrop { background: #000a; }
+dialog h2 { margin: 0 0 12px; font: 700 22px var(--display); letter-spacing: .1em; text-transform: uppercase; }
+dialog .f { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; margin-bottom: 10px; }
+dialog select { background: var(--chassis); border: 1px solid var(--rule); border-radius: 3px; padding: 5px; }
+.bar { height: 10px; background: #0d0e10; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; margin: 14px 0 6px; }
+.bar i { display: block; height: 100%; width: 0; background: var(--amber); }
+.dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+#exportMsg { font-size: 13px; min-height: 1.4em; }
+#exportMsg a { color: var(--amber); }
+.err { color: #ff8a80; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><h1>CVI-84</h1><span>Computer Video Instrument</span></div>
+    <label class="tbtn" for="fileV1">Load video</label><input id="fileV1" type="file" accept="video/*" hidden>
+    <label class="tbtn" for="fileV2" title="Second input for two-input presets 84–93">Load V2</label><input id="fileV2" type="file" accept="video/*" hidden>
+    <span class="srcname" id="srcName">Demo source (no video loaded)</span>
+    <button class="tbtn" id="btnSave" type="button">Save project</button>
+    <label class="tbtn" for="fileProj">Open project</label><input id="fileProj" type="file" accept=".json,application/json" hidden>
+    <button class="tbtn primary" id="btnExport" type="button">Export MP4</button>
+  </header>
+
+  <section class="monitor" aria-label="Monitor">
+    <div class="screen" id="screen">
+      <canvas id="out"></canvas>
+      <canvas id="overlay"></canvas>
+      <div class="dropzone" id="dropzone"><div>DROP A VIDEO HERE<br>OR PRESS LOAD VIDEO</div></div>
+      <div class="menu" id="menu" hidden></div>
+      <div class="osd" id="osd"></div>
+    </div>
+    <div class="monfoot"><span>Preset <b id="presetName">76 Digital image</b></span><span>Display <b id="dispName">Dig./Analog</b></span><span>Field store <b id="fsInfo">256 × 256 · 4096 colours</b></span></div>
+  </section>
+
+  <section class="console" aria-label="Console">
+    <div class="group"><h3>Colour</h3><div class="faders" id="fg1"></div></div>
+    <div class="group"><h3>Rates</h3><div class="faders" id="fg2"></div></div>
+    <div class="group"><h3>Screen</h3><div class="faders" id="fg3"></div></div>
+    <div class="group"><h3>Control</h3><div class="buttons" id="btns"></div>
+      <p class="hint">Hold <kbd>D</kbd> or DRAW to paint on the monitor. <kbd>M</kbd> menu, <kbd>P</kbd> preset + two digits, <kbd>F</kbd> freeze, <kbd>Esc</kbd> stop, <kbd>Space</kbd> play.</p>
+    </div>
+  </section>
+
+  <aside class="looks" id="looks" aria-label="Looks"></aside>
+
+  <section class="seq" aria-label="Sequencer">
+    <div class="transport">
+      <button class="tr" id="btnHome" type="button" title="Back to start"><svg viewBox="0 0 16 16"><path d="M2 2h2v12H2zM14 2v12L5 8z"/></svg></button>
+      <button class="tr" id="btnPlay" type="button" title="Play / pause (Space)"><svg viewBox="0 0 16 16" id="playIcon"><path d="M3 2l11 6-11 6z"/></svg></button>
+      <button class="tr rec" id="btnRec" type="button" title="Arm automation recording"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg></button>
+      <button class="tr" id="btnLoop" type="button" title="Loop"><svg viewBox="0 0 16 16"><path d="M4 5h7V3l3 3-3 3V7H4v3H2V7a2 2 0 012-2zm8 6H5v2l-3-3 3-3v2h7V6h2v3a2 2 0 01-2 2z"/></svg></button>
+      <span class="tc" id="tc">00:00:00:00</span>
+      <span class="sp"></span>
+      <span class="lbl">Field rate</span>
+      <select id="fieldRate" class="tbtn"><option value="50">50 Hz (PAL)</option><option value="60">60 Hz (NTSC)</option></select>
+      <button class="tbtn" id="btnClearAuto" type="button">Clear automation</button>
+    </div>
+    <canvas id="timeline"></canvas>
+    <p class="seqnote" id="seqNote">Arm ● and press play: every fader, button, menu change, preset and paint stroke is recorded. Faders you aren't touching play back their recording. Export renders exactly what you recorded.</p>
+  </section>
+</div>
+
+<dialog id="exportDlg">
+  <h2>Export MP4</h2>
+  <div class="f"><label for="exRes">Resolution</label><select id="exRes"><option value="src">Same as source</option><option value="1080">1080p</option><option value="720" selected>720p</option><option value="480">480p</option></select></div>
+  <div class="f"><label for="exQ">Quality</label><select id="exQ"><option value="high" selected>High</option><option value="vhigh">Very high</option><option value="med">Medium</option></select></div>
+  <div class="f"><label for="exAudio">Audio</label><select id="exAudio"><option value="1" selected>Keep original audio</option><option value="0">No audio</option></select></div>
+  <div class="bar"><i id="exBar"></i></div>
+  <div id="exportMsg"></div>
+  <div class="dlg-actions"><button class="tbtn" id="exCancel" type="button">Close</button><button class="tbtn primary" id="exGo" type="button">Render</button></div>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
