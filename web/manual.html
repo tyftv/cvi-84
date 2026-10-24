@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CVI-84 Manual</title>
+<meta name="description" content="How to use CVI-84: the effect chain, every effect, recording and exporting, in plain English.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single readable column with a sticky contents list on wide screens. Same dark palette as the editor. */
+:root {
+  color-scheme: dark;
+  --bg: #111215; --panel: #18191d; --raised: #202227; --line: #2c2e35;
+  --text: #e8e8ec; --dim: #a3a5ae; --faint: #6c6e78; --accent: #4f7bff; --auto: #ffb02e;
+  --ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif; --mono: 'Geist Mono', ui-monospace, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--ui); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-block: 28px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; }
+@media (max-width: 820px) { .wrap { grid-template-columns: minmax(0, 1fr); gap: 20px; } nav.toc { position: static !important; } }
+nav.toc { position: sticky; top: 20px; align-self: start; font-size: 14px; }
+nav.toc a { display: block; color: var(--dim); text-decoration: none; padding: 3px 0; }
+nav.toc a:hover { color: var(--text); }
+nav.toc .back { display: inline-flex; margin-bottom: 18px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--raised); font-weight: 600; }
+main { min-width: 0; max-width: 68ch; }
+h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -.01em; text-wrap: balance; }
+.lede { color: var(--dim); font-size: 18px; margin: 0 0 32px; }
+h2 { font-size: 22px; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); text-wrap: balance; scroll-margin-top: 16px; }
+h3 { font-size: 17px; margin: 26px 0 6px; }
+p, li { color: #d4d5db; }
+ol, ul { padding-left: 22px; }
+li { margin: 4px 0; }
+kbd { font: 13px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; color: var(--text); background: var(--raised); }
+b, strong { color: var(--text); }
+.tip { border-left: 3px solid var(--accent); background: #4f7bff14; padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; }
+.chainpic { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0; font-size: 14px; }
+.chainpic span { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); font-weight: 600; }
+.chainpic span.end { border-style: dashed; background: none; color: var(--dim); }
+.chainpic i { color: var(--faint); font-style: normal; }
+.fx { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 4px 18px; margin: 10px 0 4px; }
+@media (max-width: 560px) { .fx { grid-template-columns: minmax(0, 1fr); } .fx dt { margin-top: 10px; } }
+.fx dt { font-weight: 600; color: var(--text); }
+.fx dd { margin: 0 0 10px; color: #d4d5db; }
+.fx dd em { color: var(--dim); font-style: normal; display: block; font-size: 14px; }
+.cat { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); margin-top: 22px; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td:first-child { white-space: nowrap; width: 1%; padding-right: 18px; }
+.tbl { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="toc" aria-label="Contents">
+    <a class="back" href="./">← Back to the editor</a>
+    <a href="#start">Quick start</a>
+    <a href="#screen">The screen</a>
+    <a href="#chain">How the chain works</a>
+    <a href="#effects">Every effect</a>
+    <a href="#settings">Settings you'll see a lot</a>
+    <a href="#paint">Painting and text</a>
+    <a href="#presets">Presets and saved chains</a>
+    <a href="#record">Recording changes over time</a>
+    <a href="#export">Exporting your video</a>
+    <a href="#project">Project settings</a>
+    <a href="#recipes">Recipes to try</a>
+    <a href="#keys">Keyboard shortcuts</a>
+    <a href="#help">Something's wrong</a>
+  </nav>
+  <main>
+    <h1>CVI-84 Manual</h1>
+    <p class="lede">CVI-84 recreates the Fairlight CVI, a 1984 video effects machine behind a lot of 80s music videos: trails, freezes, psychedelic colours, chunky pixels and mirror effects. You load a video, stack effects on it, play with them live, and save the result as an MP4.</p>
+
+    <h2 id="start">Quick start</h2>
+    <ol>
+      <li>Click <b>Import video</b> (top left) or drag a video onto the black screen. Any format works. If your browser can't play it directly (AVI, WMV and so on), it gets converted first, which takes a few seconds.</li>
+      <li>On the left, click an effect, for example <b>Colorize</b>. It appears in the chain at the bottom of the screen and you see it on your video right away.</li>
+      <li>Change how it looks with the controls on the right.</li>
+      <li>Add more effects. They stack in order.</li>
+      <li>Press <b>Export MP4</b> (top right) to save the finished video.</li>
+    </ol>
+    <div class="tip">Use Chrome or Edge on a computer. Other browsers may play the effects but can't always save the MP4.</div>
+
+    <h2 id="screen">The screen</h2>
+    <ul>
+      <li><b>Left: the library.</b> The <b>Effects</b> tab lists every effect you can add. The <b>Presets</b> tab has the CVI's 100 factory setups and your saved chains.</li>
+      <li><b>Middle: the viewer.</b> Your video with every effect applied. Above it is the paint toolbar. Below it are play, freeze and record.</li>
+      <li><b>Right: the settings.</b> The controls for whichever effect you clicked in the chain. Click <b>Output</b> in the chain to see project settings instead.</li>
+      <li><b>Bottom: the chain.</b> Your effects in order. The <b>Automation</b> tab next to it shows anything you've recorded.</li>
+    </ul>
+
+    <h2 id="chain">How the chain works</h2>
+    <p>Think of guitar pedals. The video goes into the first effect, comes out changed, goes into the next one, and so on until it reaches Output.</p>
+    <div class="chainpic"><span class="end">Video 1</span><i>→</i><span>Chroma key</span><i>→</i><span>Trail</span><i>→</i><span>Colorize</span><i>→</i><span>VHS</span><i>→</i><span class="end">Output</span></div>
+    <p><b>Order matters.</b> VHS then Colorize looks different from Colorize then VHS, because each effect only sees what the ones before it made. A good rule: effects that change the picture go first, and looks like VHS and CRT go at the end.</p>
+    <ul>
+      <li><b>Add</b> an effect: click it in the library. It's inserted right after the effect you have selected (or at the end).</li>
+      <li><b>Edit</b>: click it in the chain. Its controls appear on the right.</li>
+      <li><b>Reorder</b>: drag it left or right in the chain.</li>
+      <li><b>Turn off for a second</b>: click its power icon. It stays in the chain but does nothing until you turn it back on.</li>
+      <li><b>Remove</b>: click its ×, or select it and press <kbd>Delete</kbd>.</li>
+      <li><b>Clear chain</b> (bottom right) removes everything.</li>
+    </ul>
+    <p>You can add the same effect more than once. Each CVI effect in the chain is its own complete CVI machine, which is how people chained real CVIs together back in the day.</p>
+
+    <h2 id="effects">Every effect</h2>
+    <p>Effects marked "keyed" need to know what your background is. See <a href="#key">Key</a> below.</p>
+
+    <span class="cat">Key</span>
+    <dl class="fx">
+      <dt>Chroma key</dt><dd>Removes a coloured background (green screen, blue screen, a plain wall) and puts something else behind you: black, a colour you pick, Video 2, or the canvas.<em>Click Pick from video, then click your background. Put it first in the chain.</em></dd>
+      <dt>Luma key</dt><dd>Same idea, but keeps whatever is brighter (or darker) than a threshold instead of keying on a colour.<em>Good for shots against a black or white background.</em></dd>
+    </dl>
+
+    <span class="cat">Color</span>
+    <dl class="fx">
+      <dt>Colorize</dt><dd>The classic CVI colour effects: rainbow false colour (Spectrum), Solarize, sepia, posterize, negatives and tints. Pick a <b>Style</b>, then move Hue and Intensity.<em>Also turns your video into chunky CVI pixels, like the real machine.</em></dd>
+      <dt>Colour crawl</dt><dd>Keyed. Your subject leaves a trail whose colours ripple and crawl.</dd>
+      <dt>Pattern colourize</dt><dd>Colourizes the picture through a moving pattern (grid, hearts, checkerboard, stripes). Click a pattern to change it.</dd>
+      <dt>Shatter</dt><dd>Flickers a pattern between the normal picture and a colourized one. The Rate sets how fast.</dd>
+    </dl>
+
+    <span class="cat">Time</span>
+    <dl class="fx">
+      <dt>Trail</dt><dd>Keyed. The subject moves live and leaves frozen copies of itself behind, the signature CVI look.<em>Turn on Scroll inside it to make the copies drift.</em></dd>
+      <dt>Colour trail</dt><dd>Keyed. Like Trail, but the subject leaves a splash of changing colour instead of copies.</dd>
+      <dt>Strobe</dt><dd>Grabs a frame and holds it, over and over, so motion looks choppy and stuttery. Rate sets how often.</dd>
+      <dt>Ghost</dt><dd>A held frame and the live video blended together, like a double exposure.</dd>
+      <dt>Catch-up</dt><dd>Keyed. The subject plays live while a delayed copy of the scene lags behind.</dd>
+      <dt>Feedback</dt><dd>Feeds the effect's own output back into itself, like pointing a camera at its own TV. Turn up Pixelate or Scroll for tunnels and smears.</dd>
+      <dt>Slow scan</dt><dd>Freezes the picture one column at a time, sweeping across, so anything moving gets stretched and warped. Press <b>Run across</b> or <b>Run down</b>.</dd>
+    </dl>
+
+    <span class="cat">Shape</span>
+    <dl class="fx">
+      <dt>Pixelate</dt><dd>Big chunky pixels. Pixelate sets the block size, Stretch makes them wide or tall.</dd>
+      <dt>Mirror</dt><dd>Mirrors the picture left/right, top/bottom, or both for a four-way kaleidoscope. Mirror line moves where the fold is.</dd>
+      <dt>Scroll</dt><dd>The picture slides sideways or up and down forever, wrapping around. Speed X and Y set direction and speed.</dd>
+    </dl>
+
+    <span class="cat">Paint</span>
+    <dl class="fx">
+      <dt>Paint layer</dt><dd>Draw, fill and write text over your video with the CVI paintbox. Pick a tool above the viewer and drag on the picture. See <a href="#paint">Painting and text</a>.</dd>
+      <dt>Colour tunnel</dt><dd>Keyed. Rings of colour radiate out from the centre behind your subject. Press Start tunnel.</dd>
+    </dl>
+
+    <span class="cat">Video 2</span>
+    <p>These mix in a second video. Load it with <b>+ Video 2</b> at the top first.</p>
+    <dl class="fx">
+      <dt>Wipe to Video 2</dt><dd>A transition from your video to Video 2: sweep across, sweep down, or disintegrate.</dd>
+      <dt>Double exposure</dt><dd>Your video and Video 2 blended on top of each other.</dd>
+      <dt>Video 1/2 flip</dt><dd>Flickers back and forth between the two videos at the Rate.</dd>
+    </dl>
+
+    <span class="cat">Look</span>
+    <p>These don't do CVI tricks; they make the result look like old media. Put them at the end of the chain.</p>
+    <dl class="fx">
+      <dt>Black &amp; white</dt><dd>Black and white film with grain, colour filters and toning (sepia, blue and so on).</dd>
+      <dt>Halftone</dt><dd>Printed newspaper or comic dots: black and white, full CMYK colour, or colour dots.</dd>
+      <dt>VHS</dt><dd>Videotape: smeared colour, tracking wobble, snow, dropouts and the noisy band at the bottom.</dd>
+      <dt>CRT</dt><dd>An old TV tube: curved glass, scanlines, the RGB phosphor pattern, glow and flicker.</dd>
+    </dl>
+
+    <span class="cat">Advanced</span>
+    <dl class="fx">
+      <dt>CVI unit</dt><dd>A whole CVI with every single setting showing. Presets load into one of these. Use it when you want to build something from scratch exactly like the original machine.</dd>
+    </dl>
+
+    <h2 id="settings">Settings you'll see a lot</h2>
+    <h3>On and Amount</h3>
+    <p>Every effect has these at the top. <b>On</b> turns it off without removing it. <b>Amount</b> blends it with the picture underneath: 100% is full strength, 50% is half, 0% is nothing.</p>
+    <h3 id="key">Key</h3>
+    <p>Keyed effects split the picture into "subject" and "background." The original machine expected a blue backdrop, so it's set to blue by default. To use your own footage:</p>
+    <ol>
+      <li>Click <b>Pick from video</b>.</li>
+      <li>Click on your background in the picture.</li>
+      <li>If too much or too little disappears, adjust <b>Tolerance</b>.</li>
+      <li>If it's keeping the wrong part, turn on <b>Swap subject / background</b>.</li>
+    </ol>
+    <p>Plain, evenly lit backgrounds key best. A busy room won't key cleanly; that's how keying works on any machine.</p>
+    <h3>Freeze &amp; strobe</h3>
+    <ul>
+      <li><b>Live</b>: updates every frame (normal).</li>
+      <li><b>Strobe</b>: grabs a frame every so often, set by <b>Rate</b>.</li>
+      <li><b>Burst</b>: grabs for a moment, holds for a moment, repeat.</li>
+      <li><b>Single</b>: only grabs when you press <b>Grab a frame</b> or <kbd>F</kbd>.</li>
+      <li><b>Music</b>: grabs on bass hits in your video's soundtrack.</li>
+    </ul>
+    <p>The <b>Freeze</b> button under the viewer (or <kbd>F</kbd>) holds the selected effect's picture until you press it again.</p>
+    <h3>Intensity</h3>
+    <p>Intensity is centred: in the middle it does nothing, to the right is the normal effect, and to the left is the opposite (usually a negative version). That's how the original's Colour Depth slider worked.</p>
+    <h3>Colour comes from</h3>
+    <p><b>Sliders</b> uses the Hue/Saturation/Brightness you set. <b>Hold</b> keeps the colour locked even if you turn Colorize off. <b>Music</b> makes bass red, mids green and treble blue. <b>Random</b> jumps to new colours on its own; <b>Change speed</b> sets how often.</p>
+    <h3>Show all CVI settings</h3>
+    <p>Each effect only shows the controls that matter for it, to keep things simple. The button at the bottom of the right panel reveals everything the real machine could do for that effect: routing, masks, paint, fills and so on.</p>
+
+    <h2 id="paint">Painting and text</h2>
+    <p>Pick a tool in the bar above the viewer. If no CVI effect is selected, a Paint layer gets added for you.</p>
+    <div class="tbl"><table>
+      <tr><td><b>Select</b> <kbd>V</kbd></td><td>Normal mode, no painting.</td></tr>
+      <tr><td><b>Brush</b> <kbd>B</kbd></td><td>Freehand painting. Change brush shape in the right panel; <kbd>[</kbd> and <kbd>]</kbd> change size.</td></tr>
+      <tr><td><b>Dots</b></td><td>Paints a dot every few pixels as you drag.</td></tr>
+      <tr><td><b>Line</b> <kbd>L</kbd></td><td>Drag to draw a straight line.</td></tr>
+      <tr><td><b>Rays</b></td><td>Lines that all start from where you first clicked, like a starburst.</td></tr>
+      <tr><td><b>Rectangle, Circle, Ellipse</b></td><td>Drag to draw a filled shape.</td></tr>
+      <tr><td><b>Fill</b> <kbd>G</kbd></td><td>Paint-bucket fill, bounded by the mask.</td></tr>
+      <tr><td><b>Cut &amp; paste</b></td><td>Drag a box to copy part of the picture, then click somewhere to stamp it.</td></tr>
+      <tr><td><b>Copy</b></td><td>Copies the live video into the masked area.</td></tr>
+      <tr><td><b>Text</b> <kbd>T</kbd></td><td>Click to stamp your text (type it in the Text section). Uses the CVI's blocky built-in font.</td></tr>
+      <tr><td><b>Eyedropper</b> <kbd>I</kbd></td><td>Click the picture to grab a colour.</td></tr>
+    </table></div>
+    <p><b>Paint on: Picture / Mask / Both.</b> Picture paints colour. Mask paints the invisible "stencil" that decides where effects show; for example, in a Paint layer, painting the mask cuts windows in the paint. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes painting.</p>
+    <p>The Paint section on the right has the brush shapes, paint styles (spatter, mottled, rainbow), blend modes, symmetry (mirror painting and kaleidoscope), and textures. The Fill canvas section floods the whole thing with a colour, a sweep, a colour tunnel, colour bars and so on.</p>
+
+    <h2 id="presets">Presets and saved chains</h2>
+    <p>The <b>Presets</b> tab has the CVI's original 100 factory presets with their real numbers and names. Click one and it loads into the selected effect, or gets added as a new CVI unit if nothing is selected. You can also press <kbd>P</kbd> then two digits (like <kbd>5</kbd><kbd>9</kbd> for Trail).</p>
+    <p>Under <b>My chains</b>, type a name and press <b>Save chain</b> to keep your whole chain with all its settings. Click it later to load it back. These are saved in your browser on this computer.</p>
+
+    <h2 id="record">Recording changes over time</h2>
+    <p>You can perform the effects live and have every move replayed in the export, like automation in a music program.</p>
+    <ol>
+      <li>Go back to the start (<kbd>Home</kbd> or the ⏮ button).</li>
+      <li>Click <b>Record</b> so it lights up.</li>
+      <li>Press play and move sliders, switch effects on and off, load presets, paint, press Freeze. Everything is written down against the video's time.</li>
+      <li>Press pause when done. Open the <b>Automation</b> tab to see what got recorded.</li>
+      <li>Play again (with Record off) and it all plays back. Export renders exactly that.</li>
+    </ol>
+    <p>To redo one control, record over it: only the controls you actually touch get replaced. To delete a single recorded control, click the × next to it in the Automation tab. <b>Clear automation</b> removes everything.</p>
+    <p>A control with a small orange dot next to its name has a recording. While playing back, it moves on its own.</p>
+
+    <h2 id="export">Exporting your video</h2>
+    <ol>
+      <li>Click <b>Export MP4</b>.</li>
+      <li>Pick the resolution and quality. "Same as source" keeps your original size.</li>
+      <li>Click <b>Render</b> and wait. When it's done, the MP4 downloads.</li>
+    </ol>
+    <p>The export always comes out at full quality, even if the preview stuttered, and keeps your original audio unless you turn it off. It uses the same shape as your video (portrait stays portrait).</p>
+    <p><b>Save project</b> saves your chain, settings and recordings into a file so you can pick it back up later with <b>Open project</b>. It doesn't include the video itself, so import the same video again after opening.</p>
+
+    <h2 id="project">Project settings</h2>
+    <p>Click <b>Output</b> at the end of the chain.</p>
+    <ul>
+      <li><b>Pixel detail</b>: how big the CVI pixels are. Original is the real machine's resolution and the chunkiest. Fine and Extra fine are smaller, cleaner pixels but make your computer work harder.</li>
+      <li><b>Smooth pixels</b>: softens the edges of the pixels instead of hard squares.</li>
+      <li><b>Hardware borders</b>: adds the black edges the real CVI had around its picture.</li>
+      <li><b>Field clock</b>: 50 Hz is the original (European) speed, 60 Hz is the American version. It changes how fast strobes, sweeps and rates run.</li>
+    </ul>
+
+    <h2 id="recipes">Recipes to try</h2>
+    <h3>80s music video trail</h3>
+    <p>Chroma key (pick your background, Background: Black) → Trail → Colorize (Style: Spectrum) → CRT.</p>
+    <h3>Haunted tape</h3>
+    <p>Ghost (Freeze: Strobe, Rate around 40%) → Black &amp; white (Toning up) → VHS (Tracking and Snow up).</p>
+    <h3>Kaleidoscope</h3>
+    <p>Mirror (both mirrors on) → Colorize (Style: Solarize) → Feedback (Pixelate a little) at Amount 50%.</p>
+    <h3>Comic book</h3>
+    <p>Colorize (Style: Posterize contours) → Halftone (Screen: CMYK).</p>
+    <h3>Slow scan smear</h3>
+    <p>Slow scan, press Run across while you move in front of the camera. Add VHS after it.</p>
+
+    <h2 id="keys">Keyboard shortcuts</h2>
+    <div class="tbl"><table>
+      <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
+      <tr><td><kbd>Home</kbd></td><td>Back to the start</td></tr>
+      <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Skip back / forward 1 second (hold <kbd>Shift</kbd> for 5)</td></tr>
+      <tr><td><kbd>F</kbd></td><td>Freeze (or grab a frame in Single mode)</td></tr>
+      <tr><td><kbd>P</kbd> + two digits</td><td>Load a factory preset by number</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Stop wipes and fills, back to the Select tool</td></tr>
+      <tr><td><kbd>V</kbd> <kbd>B</kbd> <kbd>L</kbd> <kbd>R</kbd> <kbd>C</kbd> <kbd>G</kbd> <kbd>T</kbd> <kbd>I</kbd></td><td>Select, Brush, Line, Rectangle, Circle, Fill, Text, Eyedropper</td></tr>
+      <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Smaller / bigger brush</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo painting</td></tr>
+      <tr><td><kbd>Delete</kbd></td><td>Remove the selected effect (when the chain has focus)</td></tr>
+    </table></div>
+    <p>Double-click any slider's name to reset it.</p>
+
+    <h2 id="help">Something's wrong</h2>
+    <h3>The screen is black</h3>
+    <p>That's normal until you import a video. If a video is loaded and it's still black, check the effects in the chain: turn them off one by one with the power icon to find the culprit. A Paint layer or Chroma key with nothing set up can cover the picture.</p>
+    <h3>The key isn't working</h3>
+    <p>Click Pick from video and click your background again, then raise Tolerance. If it keeps the wrong part, turn on Swap subject / background.</p>
+    <h3>Playback is choppy</h3>
+    <p>Lots of effects, or Extra fine pixels, are heavy. Try Original pixel detail or fewer effects while you work. The exported MP4 is never choppy.</p>
+    <h3>My file won't load</h3>
+    <p>Files the browser can't play get converted automatically. Very big files (over about 1.8 GB) are too large for that; convert them to MP4 first with HandBrake or Premiere.</p>
+    <h3>Export won't start</h3>
+    <p>Use Chrome or Edge. If it says the size isn't supported, pick 720p.</p>
+    <h3>I want the old-school version</h3>
+    <p>Click <b>Classic console</b> in the top bar for the original 1984-style console with its sliders, buttons and blue menu pages.</p>
+  </main>
+</div>
+</body>
+</html>
