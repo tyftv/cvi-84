@@ -471,6 +471,7 @@ export class CVI {
           if (P.stencilSource === 0) m = internal;
           else {
             let key;
+            if (inputs.matte && P.stencilSource !== 1) { key = inputs.matte[i]; m = P.stencilSource === 3 ? key & internal : key; m ^= invert; mk[i] = m; continue; }
             const src = P.stencilSource === 1 ? (inputs.v2 || keySrc) : keySrc;
             const r = src[i * 4] / 255, g = src[i * 4 + 1] / 255, b = src[i * 4 + 2] / 255;
             if (P.stencilSource === 1 || P.keyMode === 1) key = lum(r, g, b) > kl ? 1 : 0;

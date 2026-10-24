@@ -205,7 +205,7 @@ void main(){
 // keyed composite with a smooth, full-resolution key edge (the inside/outside pictures come from the engine)
 const FS_COMP3 = HEAD + `
 uniform sampler2D analog; uniform sampler2D vOn; uniform sampler2D vOff; uniform sampler2D keysrc;
-uniform float keyMode, keyHue, keyTol, keySat, keyLuma, keyInv, soft;
+uniform float keyMode, keyHue, keyTol, keySat, keyLuma, keyInv, soft; uniform vec2 cells;
 vec3 hsv(vec3 c){ vec4 K=vec4(0.,-1./3.,2./3.,-1.); vec4 p=mix(vec4(c.bg,K.wz),vec4(c.gb,K.xy),step(c.b,c.g)); vec4 q=mix(vec4(p.xyw,c.r),vec4(c.r,p.yzx),step(p.x,c.r)); float d=q.x-min(q.w,q.y); return vec3(abs(q.z+(q.w-q.y)/(6.*d+1e-10)), d/(q.x+1e-10), q.x); }
 vec3 plane(sampler2D v, vec2 u, vec3 an){
   ivec2 vs = textureSize(v, 0);
@@ -216,13 +216,15 @@ vec3 plane(sampler2D v, vec2 u, vec3 an){
 void main(){
   vec2 u = vec2(uv.x, 1.-uv.y);
   vec3 an = texture(analog, uv).rgb;
-  vec3 k = texture(keysrc, uv).rgb;
+  vec2 ku = (floor(uv * cells) + .5) / cells;
+  vec3 k = texture(keysrc, ku).rgb;
+  float aa = max(soft, .5 / cells.y);
   float fg;
-  if (keyMode > .5) fg = smoothstep(keyLuma - soft, keyLuma + soft, dot(k, vec3(.299,.587,.114)));
+  if (keyMode > .5) fg = smoothstep(keyLuma - aa, keyLuma + aa, dot(k, vec3(.299,.587,.114)));
   else {
     vec3 h = hsv(k);
     float dh = abs(h.x - keyHue); dh = min(dh, 1.-dh);
-    float bg = (1. - smoothstep(keyTol - soft, keyTol + soft, dh)) * smoothstep(keySat - soft, keySat + soft, h.y) * smoothstep(.12 - soft*.5, .12 + soft*.5, h.z);
+    float bg = (1. - smoothstep(keyTol - aa, keyTol + aa, dh)) * smoothstep(keySat - aa, keySat + aa, h.y) * smoothstep(.12 - aa*.5, .12 + aa*.5, h.z);
     fg = 1. - bg;
   }
   if (keyInv > .5) fg = 1. - fg;

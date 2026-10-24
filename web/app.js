@@ -745,6 +745,15 @@ const SECTIONS = {
   },
   shatterRate(b) { toggle(b, { p: 'shatter', label: 'Flicker' }); slider(b, { p: 'rate2', label: 'Rate', fmt: pct, reset: 200 }); },
   key(b) {
+    const node = CUR, m = MODULES[node.type];
+    if (m.keyed) {
+      const above = () => { const i = chain.nodes.indexOf(node); return chain.nodes.slice(0, i).find((n) => MODULES[n.type].keyer && !n.bypass); };
+      const msg = h('<p class="desc"></p>'); b.appendChild(msg);
+      const wrap = h('<div style="display:grid;gap:10px"></div>'); b.appendChild(wrap);
+      binds.push(() => { const k = above(); msg.hidden = !k; wrap.hidden = !!k; if (k) msg.innerHTML = `Using the key from <b>${esc(k.name)}</b> above. Adjust the key there.`; });
+      b = wrap;
+      note(b, 'No key above this effect, so it keys on its own. Tip: add Chroma key above it to key once and share it.');
+    }
     seg(b, { p: 'stencilSource', label: 'Key from', opts: [[2, 'Picture'], [1, 'Video 2'], [0, 'Painted']] });
     seg(b, { p: 'keyMode', label: 'Key on', opts: [[0, 'Colour'], [1, 'Brightness']], show: keyed });
     const kc = h(`<label class="field" style="grid-template-columns:88px minmax(0,1fr) auto"><span>Backdrop</span><input type="color"><button type="button" class="gbtn">Pick</button></label>`);
@@ -757,8 +766,10 @@ const SECTIONS = {
     slider(b, { p: 'keySat', label: 'Min saturation', fmt: pct, reset: 60, show: () => keyed() && gp('keyMode') === 0 });
     slider(b, { p: 'keyLuma', label: 'Threshold', fmt: pct, reset: 128, show: () => (keyed() && gp('keyMode') === 1) || gp('stencilSource') === 1 });
     toggle(b, { p: 'keyInvert', label: 'Swap subject / background', show: () => gp('stencilSource') !== 0 });
-    slider(b, { p: 'keyEdge', label: 'Edge', fmt: (v) => (v === 0 ? 'Blocky' : Math.round(v / 2.55) + '%'), reset: 140, show: () => gp('stencilSource') !== 0 });
-    note(b, 'Edge: all the way left is the blocky original CVI key; slide right for a smooth, full-resolution edge with more softness.', () => gp('stencilSource') !== 0);
+    if (MODULES[CUR.type].keyer || MODULES[CUR.type].sections[0] === 'all') {
+      slider(b, { p: 'keyEdge', label: 'Edge detail', fmt: (v) => (v === 0 ? 'CVI' : Math.round(v / 2.55) + '%'), reset: 0, show: () => gp('stencilSource') !== 0 });
+      note(b, 'Edge detail: 0 is the original blocky CVI edge. Raise it and the edge gets gradually finer, up to full resolution at 100%.', () => gp('stencilSource') !== 0);
+    }
     note(b, 'The key decides which part is the subject. The original CVI keyed on a blue backdrop; on other footage use Pick from video and click your background (a plain wall works best).', keyed);
   },
   mask(b) {
