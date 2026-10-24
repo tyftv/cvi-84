@@ -94,7 +94,8 @@ button, input, select { font: inherit; color: inherit; }
 .fader.auto .cap { outline: 2px solid var(--amber); outline-offset: 1px; }
 .fader label { font: 600 10px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; text-align: center; }
 .fader output { font: 18px/1 var(--crt); color: var(--amber); font-variant-numeric: tabular-nums; }
-.buttons { display: grid; grid-template-columns: repeat(6, 64px); gap: 8px; }
+.buttons { display: grid; grid-template-columns: repeat(6, minmax(0, 64px)); gap: 8px; }
+@media (max-width: 560px) { .buttons { grid-template-columns: repeat(4, minmax(0, 1fr)); } .console .group:last-child { flex: 1 1 100%; min-width: 0; } }
 .hb { position: relative; height: 48px; border-radius: 4px; border: 1px solid #000; background: linear-gradient(#3a3e46, #2a2d33); box-shadow: 0 2px 0 #000, inset 0 1px 0 #ffffff14; font: 600 10px/1.05 var(--display); letter-spacing: .1em; text-transform: uppercase; padding: 14px 4px 4px; cursor: pointer; }
 .hb:active, .hb.held { transform: translateY(1px); box-shadow: 0 1px 0 #000; }
 .hb .num { position: absolute; right: 5px; top: 3px; font: 15px/1 var(--crt); color: var(--silk-dim); }

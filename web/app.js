@@ -732,7 +732,7 @@ tl.addEventListener('pointerup', () => { scrubbing = false; });
 // ---------------------------------------------------------------- keyboard
 const heldKeys = new Set();
 window.addEventListener('keydown', (e) => {
-  if (e.target.matches('input, textarea, select') && e.target.type !== 'range') return;
+  if (e.target.matches && e.target.matches('input, textarea, select') && e.target.type !== 'range') return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key;
   if (/^[0-9]$/.test(k)) { digit(+k); e.preventDefault(); return; }

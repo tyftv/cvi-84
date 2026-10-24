@@ -344,7 +344,7 @@ export class CVI {
     const base = defaultParams();
     const keep = { title: this.P.title, keyHue: this.P.keyHue, keyTol: this.P.keyTol, keySat: this.P.keySat, keyLuma: this.P.keyLuma, keyMode: this.P.keyMode };
     this.P = { ...base, ...keep, ...st.p };
-    this.procs = []; this.singlePending = false; this.fixLutKey = null;
+    this.procs = []; this.singlePending = false; this.fixLutKey = null; this.pickArmed = false; this.titleArmed = false;
     this.g = { hpan: this.P.hpan, vpan: this.P.vpan, stretch: this.P.stretch, zoom: this.P.zoom };
     this.slideX = 0; this.slideY = 0;
     if (st.enter) for (const act of st.enter) this.dispatch(act);
