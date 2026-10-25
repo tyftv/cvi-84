@@ -187,7 +187,7 @@ function addBlock(type, opts = {}) {
   if ((MODULES[type].keyed || MODULES[type].keyer) && !opts.state) detectKey(node, false);
   selected = node.id; openCards.add(node.id);
   stripDirty = inspDirty = uiDirty = true;
-  toast('Added ' + node.name);
+  toast(type === 'datamosh' ? 'Added Datamosh: press M (or Mosh now) while it plays. It also moshes at cuts.' : 'Added ' + node.name);
   return node;
 }
 // find the backdrop colour from the edges of the frame, like clicking it with the eyedropper
@@ -223,6 +223,7 @@ function detectKey(node, announce) {
   }
   e.store.fill(0); e.cascade.fill(0);
 }
+function moshNow(node) { setNodeParam(node, 'trig', chain.getParam(node, 'trig') + 1); toast('Mosh'); }
 function removeBlock(id) {
   const i = chain.nodes.findIndex((n) => n.id === id);
   chain.remove(id);
@@ -262,7 +263,7 @@ document.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => {
   buildLib(); buildPresets();
 });
 $('fxSearch').oninput = (e) => { query = e.target.value.trim().toLowerCase(); buildLib(); buildPresets(); };
-const CAT_COLOUR = { Key: '#34d399', Color: '#ff6b9a', Time: '#ffb02e', Shape: '#4fd1c5', Paint: '#a78bfa', 'Video 2': '#60a5fa', Look: '#9ca3af', Advanced: '#e8e8ec' };
+const CAT_COLOUR = { Key: '#34d399', Color: '#ff6b9a', Time: '#ffb02e', Shape: '#4fd1c5', Paint: '#a78bfa', 'Video 2': '#60a5fa', Glitch: '#f472b6', Look: '#9ca3af', Advanced: '#e8e8ec' };
 function buildLib() {
   const host = $('libPane'); host.innerHTML = '';
   for (const cat of CATEGORIES) {
@@ -418,11 +419,13 @@ function uploadTracks() {
   if (c2 && c2.el.readyState >= 2) renderer.uploadSource('v2', fitted(1, c2.el, c2.el.videoWidth || c2.media.w, c2.el.videoHeight || c2.media.h));
   return !!c2;
 }
+let lastClipId = null;
 function drawFrame() {
   if (renderer.w === 0) fitPreview();
   const hasV2 = TL.hasClips() ? uploadTracks() : (renderer.uploadSource('analog', demo), false);
   if (!freeSteps) applyLookAuto(targetField, chain, auto);
-  curFrameTex = renderChain(chain, renderer, { advance: advanceLive, hasV2, frame: targetField, blanking: settings.blanking, smooth: settings.smooth });
+  const c1 = clipAt(0, T), cut = !!(playing && c1 && lastClipId != null && c1.id !== lastClipId); lastClipId = c1 ? c1.id : null;
+  curFrameTex = renderChain(chain, renderer, { advance: advanceLive, hasV2, frame: targetField, blanking: settings.blanking, smooth: settings.smooth, cut, fieldRate });
   renderer.present(curFrameTex);
 }
 // while playing, the Video 1 clip's own clock leads (keeps sound in step); gaps run on the wall clock
@@ -750,6 +753,9 @@ const LOOK_UI = {
   vhs: [['chromaBlur', 'Colour blur', 0.3, 8, 0.1], ['chromaShift', 'Colour shift', 0, 6, 0.1], ['bleed', 'Colour bleed', 0, 1, 0.01], ['sat', 'Saturation', 0, 2, 0.01],
     ['soft', 'Softness', 0.3, 3, 0.05], ['sharpen', 'Edge ringing', 0, 2, 0.01], ['noise', 'Snow', 0, 1, 0.01], ['tracking', 'Tracking', 0, 1, 0.01],
     ['jitter', 'Jitter', 0, 1, 0.01], ['headSwitch', 'Head switch', 0, 1, 0.01], ['dropouts', 'Dropouts', 0, 1, 0.01], ['wear', 'Tape wear', 0, 1, 0.01]],
+  mosh: [['hold', 'Hold length', 0.1, 10, 0.1, (v) => (v >= 10 ? 'Never' : v.toFixed(1) + ' s')], ['block', 'Block size', 4, 64, 1, (v) => Math.round(v) + ' px'], ['strength', 'Motion', 0, 4, 0.01, (v) => '×' + v.toFixed(2)],
+    ['bloom', 'Bloom', 'sel', ['Off', 'On']], ['bleed', 'Bleed', 0, 0.1, 0.001, (v) => Math.round(v * 1000) / 10 + '%'], ['auto', 'Auto mosh', 0, 10, 0.1, (v) => (v <= 0 ? 'Off' : 'every ' + v.toFixed(1) + ' s')],
+    ['cuts', 'Mosh at cuts', 'sel', ['Off', 'On']], ['src', 'Motion from', 'sel', ['Video 1', 'Video 2']]],
   crt: [['maskType', 'Mask', 'sel', ['None', 'Grille', 'Shadow', 'Slot']], ['curv', 'Curvature', 0, 1.5, 0.01], ['scan', 'Scanlines', 0, 1, 0.01], ['lines', 'Line count', 120, 1080, 2],
     ['maskAmt', 'Mask strength', 0, 1, 0.01], ['bloom', 'Glow', 0, 1.5, 0.01], ['converge', 'Convergence', 0, 4, 0.05], ['persist', 'Persistence', 0, 0.9, 0.01],
     ['vignette', 'Vignette', 0, 1, 0.01], ['bright', 'Brightness', 0.5, 2, 0.01], ['flicker', 'Flicker', 0, 1, 0.01], ['cornerR', 'Corners', 0, 0.2, 0.005], ['interlace', 'Interlace', 'sel', ['Off', 'On']]],
@@ -952,7 +958,12 @@ const SECTIONS = {
     buttons(b, [{ label: 'Place text on picture', run: () => selectTool('text') }], 1);
   },
   look(b, look) {
-    for (const [key, label, a, bb, step] of LOOK_UI[look]) {
+    if (look === 'mosh') {
+      const node = CUR;
+      buttons(b, [{ label: 'Mosh now', primary: true, run: () => moshNow(node), title: 'Stop refreshing the picture so the movement smears it (M)' }, { label: 'Clean frame', run: () => setNodeParam(node, 'refresh', chain.getParam(node, 'refresh') + 1), title: 'Snap back to the clean picture' }], 2);
+      note(b, 'Press Mosh (or M) while it plays. With Record on, every press is saved to the timeline.');
+    }
+    for (const [key, label, a, bb, step, fmt] of LOOK_UI[look]) {
       if (a === 'sel') { if (bb.length <= 4) seg(b, { p: key, label, opts: bb.map((o, i) => [i, o]) }); else select_(b, { p: key, label, opts: bb.map((o, i) => [i, o]) }); }
       else if (a === 'col') {
         const node = CUR;
@@ -961,7 +972,7 @@ const SECTIONS = {
         ci.oninput = () => setNodeParam(node, key, [1, 3, 5].map((i) => parseInt(ci.value.slice(i, i + 2), 16) / 255));
         binds.push(() => { if (document.activeElement !== ci) ci.value = '#' + chain.getParam(node, key).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join(''); });
         b.appendChild(el);
-      } else slider(b, { p: key, label, min: a, max: bb, step, reset: LOOK_DEFAULTS[look][key] });
+      } else slider(b, { p: key, label, min: a, max: bb, step, fmt, reset: LOOK_DEFAULTS[look][key] });
     }
   },
 };
@@ -1020,7 +1031,7 @@ const tl = $('timeline'), tctx = tl.getContext('2d');
 const LABEL_W = 150, RULER_H = 22, TRACK_H = 50, TRACK_GAP = 4, AUTO_HEAD = 22, ROW_H = 18;
 const TRACK_Y = [RULER_H + 2, RULER_H + 2 + TRACK_H + TRACK_GAP];
 const LANES_Y = TRACK_Y[1] + TRACK_H + 6;
-const PARAM_LABELS = { hue: 'Hue', sat: 'Saturation', val: 'Brightness', depth: 'Intensity', rate1: 'Speed', rate2: 'Rate', hpan: 'Position X', vpan: 'Position Y', stretch: 'Stretch', zoom: 'Pixelate', display: 'Routing', colourize: 'Colorize', colourizeType: 'Colour style', freezeMode: 'Freeze mode', freeze: 'Freeze', useStencil: 'Mask on', invertStencil: 'Invert', stencilSource: 'Mask from', bypass: 'On/off', mix: 'Amount' };
+const PARAM_LABELS = { hue: 'Hue', sat: 'Saturation', val: 'Brightness', depth: 'Intensity', rate1: 'Speed', rate2: 'Rate', hpan: 'Position X', vpan: 'Position Y', stretch: 'Stretch', zoom: 'Pixelate', display: 'Routing', colourize: 'Colorize', colourizeType: 'Colour style', freezeMode: 'Freeze mode', freeze: 'Freeze', useStencil: 'Mask on', invertStencil: 'Invert', stencilSource: 'Mask from', bypass: 'On/off', mix: 'Amount', trig: 'Mosh hits', refresh: 'Clean frames', hold: 'Hold length', strength: 'Motion', bloom: 'Bloom', bleed: 'Bleed' };
 function laneList() { const l = [...auto.lanes.keys()].filter((x) => chain.get(x.split('|')[0])); if (auto.events.length) l.push('#events'); return l; }
 function laneLabel(l) {
   if (l === '#events') return 'Buttons / paint / presets';
@@ -1272,6 +1283,7 @@ window.addEventListener('keydown', (e) => {
     case 'p': presetKeys = ''; toast('Type a two-digit preset number'); break;
     case 'home': home(); break;
     case 's': splitAtPlayhead(); break;
+    case 'm': { const n = selNode() && selNode().type === 'datamosh' ? selNode() : chain.nodes.find((x) => x.type === 'datamosh'); if (n) moshNow(n); else toast('Add a Datamosh effect first'); break; }
     case 'delete': case 'backspace': if (selClip) { e.preventDefault(); deleteSelectedClip(); } break;
     case 'arrowleft': seek(curTime() - (e.shiftKey ? 5 : 1)); break;
     case 'arrowright': seek(curTime() + (e.shiftKey ? 5 : 1)); break;
@@ -1432,7 +1444,8 @@ async function runExport() {
       const has2 = await upload(1, t, 'v2');
       applyLookAuto(target, ch, au);
       const adv = (e, node, inputs_) => { while (e.field <= target) { applyNodeAuto(node, e.field, au, ch); if (inputs_) e.step(inputs_, audioAt(e.field)); else e.field++; } };
-      const tex = renderChain(ch, R, { advance: adv, hasV2: has2, frame: target, blanking: settings.blanking, smooth: settings.smooth });
+      const cc = clipAt(0, t), cut = !!(cc && i > 0 && clipAt(0, (i - 1) / fps) !== cc);
+      const tex = renderChain(ch, R, { advance: adv, hasV2: has2, frame: target, blanking: settings.blanking, smooth: settings.smooth, cut, fieldRate });
       R.present(tex);
       await vsrc.add(t, 1 / fps);
       if (i % 5 === 0) { const p = 0.1 + 0.9 * (i / total); $('exBar').style.width = `${(p * 100).toFixed(1)}%`; $('exportMsg').textContent = `Rendering… ${(p * 100).toFixed(0)}%`; }

@@ -244,10 +244,41 @@ void main(){
   o = vec4(acc/16., 1.);
 }`;
 
+// ---- Datamosh (faked in the engine, no broken files) ----
+// 1. motion estimation: for each block of the new frame, find where it was in the previous frame (a "motion vector")
+const FS_MOSH_ME = HEAD + `uniform sampler2D src; uniform sampler2D prev; uniform float bs; uniform float rad; uniform vec2 full;
+float Y(sampler2D t, vec2 p){ return dot(texture(t, p/full).rgb, vec3(.299,.587,.114)); }
+void main(){
+  vec2 c = (floor(gl_FragCoord.xy) + .5) * bs;
+  float cur[16];
+  for (int i=0;i<4;i++) for (int j=0;j<4;j++) cur[i*4+j] = Y(src, c + (vec2(float(i),float(j)) - 1.5) / 4. * bs);
+  float step = rad / 8.;
+  vec2 best = vec2(0.); float bc = 1e9;
+  for (int a=-8;a<=8;a++) for (int b=-8;b<=8;b++) {
+    vec2 d = vec2(float(a),float(b)) * step;
+    float cost = 0.;
+    for (int i=0;i<4;i++) for (int j=0;j<4;j++) cost += abs(cur[i*4+j] - Y(prev, c + d + (vec2(float(i),float(j)) - 1.5) / 4. * bs));
+    cost += length(d) / rad * .08; // prefer standing still when it's a close call (stops static areas crawling)
+    if (cost < bc) { bc = cost; best = d; }
+  }
+  o = vec4(best / rad * .5 + .5, 0., 1.);
+}`;
+// 2. move the held picture's blocks along those vectors (what a P-frame does), letting a little live picture bleed in
+const FS_MOSH_MOVE = HEAD + `uniform sampler2D src; uniform sampler2D mv; uniform sampler2D live; uniform float bs; uniform float rad; uniform float strength; uniform float bleed;
+void main(){
+  ivec2 ms = textureSize(mv, 0);
+  vec2 v = texelFetch(mv, clamp(ivec2(gl_FragCoord.xy / bs), ivec2(0), ms - 1), 0).rg * 2. - 1.;
+  vec2 d = v * rad * strength;
+  vec3 held = texture(src, (gl_FragCoord.xy + d) / res).rgb;
+  vec3 l = texture(live, uv).rgb;
+  o = vec4(mix(held, l, bleed), 1.);
+}`;
+
 export const LOOK_DEFAULTS = {
   bw: { on: 0, mode: 0, contrast: 1.15, bright: 0, gamma: 1, grain: 0.12, grainSize: 1.5, tintAmt: 0, tintHue: 0.08, vignette: 0.3 },
   halftone: { on: 0, style: 0, cell: 8, angle: 45, contrast: 1.2, mixAmt: 1, shape: 0, ink: [0.08, 0.07, 0.12], paper: [0.96, 0.94, 0.88] },
   vhs: { on: 0, chromaBlur: 3, chromaShift: 1.5, soft: 1.2, sharpen: 0.6, noise: 0.35, tracking: 0.4, jitter: 0.5, headSwitch: 0.6, dropouts: 0.4, sat: 1.1, bleed: 0.5, wear: 0.2 },
+  mosh: { on: 1, hold: 3, block: 16, strength: 1, bloom: 0, bleed: 0.005, auto: 0, cuts: 1, src: 0, trig: 0, refresh: 0 },
   crt: { on: 0, curv: 0.6, scan: 0.7, lines: 480, maskType: 1, maskAmt: 0.45, bloom: 0.5, vignette: 0.6, bright: 1.25, flicker: 0.3, persist: 0.35, converge: 1.2, interlace: 0, cornerR: 0.06 },
 };
 
@@ -263,6 +294,7 @@ export class Renderer {
       composite: this.prog(FS_COMPOSITE), bw: this.prog(FS_BW), halftone: this.prog(FS_HALFTONE),
       vhs: this.prog(FS_VHS), crt: this.prog(FS_CRT), copy: this.prog(FS_COPY),
       src: this.prog(FS_SRC), comp2: this.prog(FS_COMP2), mix: this.prog(FS_MIX), grab: this.prog(FS_GRAB), blank: this.prog(FS_BLANK), comp3: this.prog(FS_COMP3),
+      moshMe: this.prog(FS_MOSH_ME), moshMove: this.prog(FS_MOSH_MOVE),
     };
     this.targets = new Map(); this.grabT = null;
     this.tex = { analog: this.makeTex(gl.LINEAR), v2: this.makeTex(gl.LINEAR), view: this.makeTex(gl.NEAREST), vOn: this.makeTex(gl.NEAREST), vOff: this.makeTex(gl.NEAREST) };
@@ -321,6 +353,13 @@ export class Renderer {
   target(id) {
     let t = this.targets.get(id);
     if (!t) { t = this.makeTarget(this.w, this.h); this.targets.set(id, t); }
+    return t;
+  }
+  // a named target of its own size (recreated when the size changes)
+  sized(id, w, h) {
+    let t = this.targets.get(id);
+    if (t && (t.w !== w || t.h !== h)) { this.gl.deleteFramebuffer(t.fb); this.gl.deleteTexture(t.t); t = null; }
+    if (!t) { t = this.makeTarget(w, h); this.targets.set(id, t); }
     return t;
   }
   dropTargets(keep) { for (const [id, t] of this.targets) if (!keep.has(id)) { this.gl.deleteFramebuffer(t.fb); this.gl.deleteTexture(t.t); this.targets.delete(id); } }

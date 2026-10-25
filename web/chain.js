@@ -33,12 +33,13 @@ export const MODULES = {
   double: { name: 'Double exposure', cat: 'Video 2', kind: 'cvi', desc: 'Blends this video with Video 2 through the frame buffer.', p: { display: 12, ...allOn, digSrc: 1 }, enter: clearStencil, sections: ['freeze', 'inputs'] },
   flip: { name: 'Video 1/2 flip', cat: 'Video 2', kind: 'cvi', desc: 'Flickers between this video and Video 2 at the Rate.', p: { display: 15, ...allOn, digSrc: 1, shatter: 1, rate2: 160 }, enter: clearStencil, sections: ['shatterRate', 'inputs'] },
   unit: { name: 'CVI unit', cat: 'Advanced', kind: 'cvi', desc: 'A whole CVI with every setting exposed. Presets load into one of these.', p: { display: 5 }, sections: ['all'] },
+  datamosh: { name: 'Datamosh', cat: 'Glitch', kind: 'look', look: 'mosh', desc: 'The picture stops refreshing and the new movement drags the old image around, like a video file with its keyframes deleted. Hit Mosh, or let it mosh at every cut.' },
   bw: { name: 'Black & white', cat: 'Look', kind: 'look', look: 'bw', desc: 'Film stock with filters, grain and toning (sepia, cyanotype…).' },
   halftone: { name: 'Halftone', cat: 'Look', kind: 'look', look: 'halftone', desc: 'Printed dots: mono, CMYK or colour, round, line or square screens.' },
   vhs: { name: 'VHS', cat: 'Look', kind: 'look', look: 'vhs', desc: 'Tape: chroma bleed, tracking wobble, snow, dropouts, head-switch noise.' },
   crt: { name: 'CRT', cat: 'Look', kind: 'look', look: 'crt', desc: 'Tube: curvature, scanlines, phosphor mask, glow and persistence.' },
 };
-export const CATEGORIES = ['Key', 'Color', 'Time', 'Shape', 'Paint', 'Video 2', 'Look', 'Advanced'];
+export const CATEGORIES = ['Key', 'Color', 'Time', 'Glitch', 'Shape', 'Paint', 'Video 2', 'Look', 'Advanced'];
 
 let nextId = 1;
 export const needsV2 = (P) => P.digSrc || P.anaSrc || P.keySrc || P.stencilSource === 1;
@@ -108,7 +109,7 @@ export class Chain {
 
 // Render one frame through the chain. `advance(engine, node, inputs)` steps that unit's fields.
 // The renderer must already hold the current Video 1 (slot 'analog') and Video 2 (slot 'v2') frames.
-export function renderChain(chain, R, { advance, hasV2, frame, blanking, smooth }) {
+export function renderChain(chain, R, { advance, hasV2, frame, blanking, smooth, cut = false, fieldRate = 50 }) {
   R.run('src', {}, R.tex.analog, R.target('src'));
   let cur = R.target('src').t;
   let v2t = cur;
@@ -126,7 +127,10 @@ export function renderChain(chain, R, { advance, hasV2, frame, blanking, smooth 
     const tgt = R.target('n' + node.id);
     if (m.kind === 'look') {
       const p = node.params;
-      if (m.look === 'crt') {
+      if (m.look === 'mosh') {
+        keep.add('h0' + node.id); keep.add('h1' + node.id); keep.add('mp' + node.id); keep.add('mv' + node.id); keep.add('mf' + node.id);
+        runMosh(R, node, cur, hasV2 ? v2t : null, tgt, frame, cut, fieldRate);
+      } else if (m.look === 'crt') {
         const prev = R.target('p' + node.id);
         R.run('crt', { ...p, frame }, cur, tgt, { prev: prev.t });
         R.run('copy', {}, tgt.t, prev);
@@ -157,4 +161,47 @@ export function renderChain(chain, R, { advance, hasV2, frame, blanking, smooth 
   if (blanking) { R.run('blank', {}, cur, R.target('out')); keep.add('out'); cur = R.target('out').t; }
   R.dropTargets(keep);
   return cur;
+}
+
+// Datamosh. A video file stores a full picture (I-frame) now and then, and in between only "this block moved
+// there" instructions (P-frames). Delete the I-frame and the new movement gets applied to the old picture.
+// Here: a held picture stops refreshing while moshing, and each frame its blocks are pushed by the motion
+// measured between the last two frames of the live video (or Video 2).
+const holdFields = (p, rate) => (p.hold >= 10 ? Infinity : Math.max(1, Math.round(p.hold * rate)));
+function runMosh(R, node, live, v2, tgt, frame, cut, rate) {
+  const p = node.params, id = node.id;
+  if (!R.mosh) R.mosh = new Map();
+  let st = R.mosh.get(id);
+  const fresh = !st || st.w !== R.w || st.h !== R.h || !R.targets.has('h0' + id) || frame < st.last;
+  if (fresh) { st = { w: R.w, h: R.h, last: frame, until: -1, trig: p.trig, refresh: p.refresh, ping: 0, frozen: false, primed: false }; R.mosh.set(id, st); }
+  const held = () => R.target('h' + st.ping + id);
+  const motionSrc = p.src && v2 ? v2 : live;
+  if (frame !== st.last || fresh) {
+    const start = () => { st.until = frame + holdFields(p, rate); };
+    if (p.trig !== st.trig) { st.trig = p.trig; start(); }
+    if (p.refresh !== st.refresh) { st.refresh = p.refresh; st.until = -1; }
+    if (p.cuts && cut) start();
+    if (p.auto > 0) { const a = Math.max(1, Math.round(p.auto * rate)); if (Math.floor(frame / a) !== Math.floor(st.last / a) && !fresh) start(); }
+    const moshing = frame < st.until && st.primed;
+    if (!moshing) { R.run('copy', {}, live, held()); st.frozen = false; }
+    else {
+      const sc = R.h / 720, bs = Math.max(4, p.block * sc), rad = Math.max(4, bs);
+      const mw = Math.ceil(R.w / bs), mh = Math.ceil(R.h / bs);
+      let mv = R.sized('mv' + id, mw, mh);
+      if (!(p.bloom && st.frozen)) R.run('moshMe', { bs, rad, full: [R.w, R.h] }, motionSrc, mv, { prev: R.target('mp' + id).t });
+      if (p.bloom) {
+        const mf = R.sized('mf' + id, mw, mh);
+        if (!st.frozen) { R.run('copy', {}, mv.t, mf); st.frozen = true; }
+        mv = mf;
+      } else st.frozen = false;
+      // bloom repeats one frame's motion every update: keep its speed the same at any frame rate
+      const k = p.bloom ? Math.min(4, (frame - st.last) * 30 / rate) : 1;
+      const src = held(); st.ping ^= 1;
+      R.run('moshMove', { bs, rad, strength: p.strength * k, bleed: p.bleed }, src.t, held(), { mv: mv.t, live });
+    }
+    R.run('copy', {}, motionSrc, R.target('mp' + id));
+    st.primed = true;
+    st.last = frame;
+  }
+  R.run('copy', {}, held().t, tgt);
 }
