@@ -375,6 +375,7 @@ function home() {
   syncFieldToTime(0);
 }
 $('btnPlay').onclick = () => (playing ? pause() : play());
+$('btnPlay').onkeydown = (e) => { if (e.key === ' ') e.preventDefault(); }; // Space is handled globally; don't double-toggle a focused button
 $('btnHome').onclick = home;
 $('btnLoop').onclick = () => { loop = !loop; uiDirty = true; };
 $('btnRec').onclick = () => { recArm = !recArm; if (!recArm) auto.releaseAll(); uiDirty = true; toast(recArm ? 'Recording armed: press play' : 'Recording off'); };
@@ -1005,7 +1006,8 @@ function syncUI() {
   $('btnFreeze').classList.toggle('on', !!(se && !single && se.P.freeze));
   $('btnRec').classList.toggle('on', recArm); $('btnRec').classList.toggle('live', recording());
   $('btnLoop').classList.toggle('on', loop);
-  $('playIcon').innerHTML = playing ? '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>' : '<path d="M4 2l10 6-10 6z"/>';
+  // only swap the icon when it changes: replacing it mid-click swallowed the click (pause sometimes ignored)
+  if ($('playIcon').dataset.on !== String(playing)) { $('playIcon').dataset.on = String(playing); $('playIcon').innerHTML = playing ? '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>' : '<path d="M4 2l10 6-10 6z"/>'; }
   const lanes = auto.lanes.size + (auto.events.length ? 1 : 0);
   $('autoCount').textContent = lanes ? `(${lanes})` : '';
   $('tlNote').textContent = recording() ? 'Recording: every change is written to the timeline.' : recArm ? 'Armed. Press play to record.' : (TL.hasClips() ? 'Click a clip to select it · drag to move · drag its ends to trim · S splits at the playhead' : 'Import clips to fill the timeline');
